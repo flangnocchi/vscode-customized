@@ -1765,6 +1765,29 @@ export abstract class ToolCallingLoop<TOptions extends IToolCallingLoopOptions =
 		}
 		this.throwIfCancelled(token);
 		this.turn.addReferences(buildPromptResult.references);
+
+		const previousRound = this.toolCallRounds.at(-1);
+		if (this.options.request.permissionLevel === 'autopilot'
+			&& this._configurationService.getNonExtensionConfig<boolean>('chat.autopilot.advanced.enabled') !== true
+			&& previousRound?.response.trim()
+			&& previousRound.toolCalls.some(toolCall => toolCall.name === ToolCallingLoop.TASK_COMPLETE_TOOL_NAME)
+			&& !this.hasProductiveToolCalls(previousRound)
+			&& previousRound.toolCalls.every(toolCall => this.toolCallResults[toolCall.id])
+			&& !buildPromptResult.metadata.get(ToolFailureEncountered)
+			&& !this.options.request.hooks?.PreToolUse?.length
+			&& !this.options.request.hooks?.PostToolUse?.length) {
+			// Pending tools have executed in buildPrompt2. Keep the existing answer
+			// final instead of asking the model for a second completion summary.
+			// The empty round still goes through the normal Stop hook path in run().
+			this._logService.info('[ToolCallingLoop] Autopilot: completed with an existing answer');
+			return {
+				response: { type: ChatFetchResponseType.Success, value: '', requestId: this.options.request.id, serverRequestId: undefined, usage: undefined, resolvedModel: keepAliveEndpoint.model },
+				round: ToolCallRound.create({ response: '', toolCalls: [], toolInputRetry: 0 }),
+				hadIgnoredFiles: buildPromptResult.hasIgnoredFiles,
+				lastRequestMessages: buildPromptResult.messages,
+				availableTools,
+			};
+		}
 		// Possible the tool call resulted in new tools getting added.
 		availableTools = await this.getAvailableTools(outputStream, token);
 

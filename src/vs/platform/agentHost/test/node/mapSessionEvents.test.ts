@@ -523,7 +523,7 @@ suite('mapSessionEvents — history replay', () => {
 		});
 	}
 
-	test('task_complete renders the input summary when tool output is truncated', async () => {
+	test('task_complete does not replace an existing assistant answer', async () => {
 		const events: ISessionEvent[] = [
 			{ type: 'user.message', data: { interactionId: 'm1', content: 'hi' } },
 			{ type: 'assistant.message', data: { messageId: 'm2', content: 'Working on it.', toolRequests: [{ toolCallId: 'tc-1', name: 'task_complete' }] } },
@@ -536,9 +536,79 @@ suite('mapSessionEvents — history replay', () => {
 		assert.strictEqual(turns.length, 1);
 		assert.deepStrictEqual(partKinds(turns[0].responseParts), [
 			{ kind: ResponsePartKind.Markdown, content: 'Working on it.' },
-			{ kind: ResponsePartKind.Markdown, content: '\n\n**Task completed:** Done. All good.' },
 		]);
 	});
+
+	for (const withStart of [true, false]) {
+		test(`task_complete falls back to the full summary without an answer (${withStart ? 'started' : 'fallback'})`, async () => {
+			const events: ISessionEvent[] = [
+				{ type: 'user.message', data: { content: 'Explain the option' } },
+				{ type: 'assistant.message', data: { content: '', toolRequests: [{ toolCallId: 'complete', name: 'task_complete', arguments: { summary: 'Full explanation.' } }] } },
+				...(withStart ? [{ type: 'tool.execution_start', data: { toolCallId: 'complete', toolName: 'task_complete', arguments: { summary: 'Full explanation.' } } } satisfies ISessionEvent] : []),
+				{ type: 'tool.execution_complete', data: { toolCallId: 'complete', success: true, result: { content: 'Truncated output' } } },
+			];
+			const { turns } = await mapSessionEvents(session, undefined, toSessionEvents(events));
+			assert.deepStrictEqual(turns.map(turn => ({ state: turn.state, parts: partKinds(turn.responseParts) })), [{
+				state: TurnState.Complete,
+				parts: [{ kind: ResponsePartKind.Markdown, content: 'Full explanation.' }],
+			}]);
+		});
+	}
+
+	test('progress before work does not suppress the completion fallback', async () => {
+		const events: ISessionEvent[] = [
+			{ type: 'user.message', data: { content: 'Fix the file' } },
+			{ type: 'assistant.message', data: { content: 'Checking the file.' } },
+			{ type: 'tool.execution_start', data: { toolCallId: 'work', toolName: 'view', arguments: { path: '/tmp/file.ts' } } },
+			{ type: 'tool.execution_complete', data: { toolCallId: 'work', success: true, result: { content: 'File contents' } } },
+			{ type: 'tool.execution_start', data: { toolCallId: 'complete', toolName: 'task_complete', arguments: { summary: 'The file is fixed.' } } },
+			{ type: 'tool.execution_complete', data: { toolCallId: 'complete', success: true } },
+		];
+		const { turns } = await mapSessionEvents(session, undefined, toSessionEvents(events));
+		assert.deepStrictEqual(partKinds(turns[0].responseParts), [
+			{ kind: ResponsePartKind.Markdown, content: 'Checking the file.' },
+			{ kind: ResponsePartKind.ToolCall },
+			{ kind: ResponsePartKind.Markdown, content: 'The file is fixed.' },
+		]);
+	});
+
+	test('completion answer detection is scoped to the current turn', async () => {
+		const events: ISessionEvent[] = [
+			{ type: 'user.message', data: { content: 'First question' } },
+			{ type: 'assistant.message', data: { content: 'First answer.' } },
+			{ type: 'user.message', data: { content: 'Second question' } },
+			{ type: 'tool.execution_start', data: { toolCallId: 'complete', toolName: 'task_complete', arguments: { summary: 'Second answer.' } } },
+			{ type: 'tool.execution_complete', data: { toolCallId: 'complete', success: true } },
+		];
+		const { turns } = await mapSessionEvents(session, undefined, toSessionEvents(events));
+		assert.deepStrictEqual(turns.map(turn => partKinds(turn.responseParts)), [
+			[{ kind: ResponsePartKind.Markdown, content: 'First answer.' }],
+			[{ kind: ResponsePartKind.Markdown, content: 'Second answer.' }],
+		]);
+	});
+
+	for (const rootAnswer of [false, true]) {
+		for (const childAnswer of [false, true]) {
+			test(`restored completion summaries stay scoped to the child (root answer: ${rootAnswer}, child answer: ${childAnswer})`, async () => {
+				const child = { agentId: 'child-agent' };
+				const events: ISessionEvent[] = [
+					{ type: 'user.message', data: { content: 'Explain the file' } },
+					...(rootAnswer ? [{ type: 'assistant.message', data: { content: 'Root answer.' } } satisfies ISessionEvent] : []),
+					{ type: 'subagent.started', ...child, data: { toolCallId: 'child-task', agentName: 'explore', agentDisplayName: 'Explore', agentDescription: 'Explore the file' } },
+					{ type: 'user.message', ...child, data: { content: 'Explore' } },
+					{ type: 'assistant.message', ...child, data: { content: childAnswer ? 'Child answer.' : '' } },
+					{ type: 'tool.execution_start', ...child, data: { toolCallId: 'complete', toolName: 'task_complete', arguments: { summary: 'Child summary.' } } },
+					{ type: 'tool.execution_complete', ...child, data: { toolCallId: 'complete', success: true } },
+				];
+				const { turns, subagentTurnsByToolCallId } = await mapSessionEvents(session, undefined, toSessionEvents(events));
+				const answers = (parts: readonly ResponsePart[]) => parts.flatMap(part => part.kind === ResponsePartKind.Markdown ? [part.content] : []);
+				assert.deepStrictEqual({
+					root: answers(turns[0].responseParts),
+					child: subagentTurnsByToolCallId.get('child-task')?.flatMap(turn => answers(turn.responseParts)),
+				}, { root: rootAnswer ? ['Root answer.'] : [], child: childAnswer ? ['Child answer.'] : ['Child summary.'] });
+			});
+		}
+	}
 
 	test('restores Auto model resolution as usage metadata', async () => {
 		const autoModeResolved = {
@@ -904,7 +974,6 @@ suite('mapSessionEvents — history replay', () => {
 			state: TurnState.Complete,
 			parts: [
 				{ kind: ResponsePartKind.Markdown, content: 'All done.' },
-				{ kind: ResponsePartKind.Markdown, content: '\n\n**Task completed:** Finished.' },
 			],
 		}]);
 	});

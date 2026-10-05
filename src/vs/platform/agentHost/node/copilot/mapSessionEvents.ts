@@ -29,6 +29,20 @@ import { buildMcpChannel, buildMcpTopLevelCustomizationId } from '../shared/mcpC
 import { readSimpleAttachmentDisplayKindFromMimeType } from './copilotAttachmentUtils.js';
 import { buildNonPtyShellTerminalUri } from '../../common/nonPtyShellTerminalUri.js';
 
+/** Earlier progress before a work tool is not the final assistant answer. */
+function hasAssistantAnswer(parts: readonly ResponsePart[]): boolean {
+	for (let i = parts.length - 1; i >= 0; i--) {
+		const part = parts[i];
+		if (part.kind === ResponsePartKind.Markdown && part.content.trim().length > 0) {
+			return true;
+		}
+		if (part.kind === ResponsePartKind.ToolCall) {
+			return false;
+		}
+	}
+	return false;
+}
+
 function tryStringify(value: unknown): string | undefined {
 	try {
 		return JSON.stringify(value);
@@ -795,7 +809,7 @@ export async function mapSessionEvents(
 					if (!builder) {
 						continue;
 					}
-					const summary = getTaskCompleteMarkdown(info.parameters, d.error?.message ?? d.result?.content);
+					const summary = getTaskCompleteMarkdown(info.parameters, d.error?.message ?? d.result?.content, d.success && hasAssistantAnswer(builder.responseParts));
 					if (summary) {
 						builder.responseParts.push({
 							kind: ResponsePartKind.Markdown,
@@ -900,7 +914,7 @@ export async function mapSessionEvents(
 				continue;
 			}
 			if (isTaskCompleteTool(info.toolName)) {
-				const summary = getTaskCompleteMarkdown(info.parameters, completion?.error?.message ?? completion?.result?.content);
+				const summary = getTaskCompleteMarkdown(info.parameters, completion?.error?.message ?? completion?.result?.content, completion?.success !== false && hasAssistantAnswer(builder.responseParts));
 				if (summary) {
 					builder.responseParts.push({
 						kind: ResponsePartKind.Markdown,

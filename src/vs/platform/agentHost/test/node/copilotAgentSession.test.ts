@@ -11596,6 +11596,80 @@ Use the attached image as context.
 			}
 		});
 
+		for (const streamed of [false, true]) {
+			test(`live task_complete preserves the assistant answer (${streamed ? 'streamed' : 'message'})`, async () => {
+				const { session, mockSession, signals } = await createAgentSession(disposables);
+				session.resetTurnState('answer-turn');
+				if (streamed) {
+					mockSession.fire('assistant.message_delta', { messageId: 'answer', deltaContent: 'Full ' });
+					mockSession.fire('assistant.message_delta', { messageId: 'answer', deltaContent: 'explanation.' });
+				} else {
+					mockSession.fire('assistant.message', { messageId: 'answer', content: 'Full explanation.' });
+				}
+				const beforeCompletion = signals.length;
+				mockSession.fire('tool.execution_start', { toolCallId: 'complete', toolName: 'task_complete', arguments: { summary: 'Completed.' } });
+				mockSession.fire('tool.execution_complete', { toolCallId: 'complete', success: true, result: { content: 'Completed.' } });
+				assert.deepStrictEqual(getActions(signals.slice(beforeCompletion)), []);
+			});
+		}
+
+		for (const earlierText of ['progress', 'reasoning', 'whitespace', 'previous turn'] as const) {
+			test(`live task_complete retains its fallback after ${earlierText}`, async () => {
+				const { session, mockSession, signals } = await createAgentSession(disposables);
+				session.resetTurnState('answer-turn');
+				if (earlierText === 'reasoning') {
+					mockSession.fire('assistant.reasoning_delta', { reasoningId: 'reasoning', deltaContent: 'Thinking about the question.' });
+				} else {
+					mockSession.fire('assistant.message', { messageId: 'earlier', content: earlierText === 'whitespace' ? '   ' : 'Checking the file.' });
+				}
+				if (earlierText === 'progress') {
+					mockSession.fire('tool.execution_start', { toolCallId: 'work', toolName: 'view', arguments: { path: '/tmp/file.ts' } });
+					mockSession.fire('tool.execution_complete', { toolCallId: 'work', success: true, result: { content: 'File contents' } });
+				} else if (earlierText === 'previous turn') {
+					session.resetTurnState('next-turn');
+				}
+				const beforeCompletion = signals.length;
+				mockSession.fire('tool.execution_start', { toolCallId: 'complete', toolName: 'task_complete', arguments: { summary: 'Full explanation.' } });
+				mockSession.fire('tool.execution_complete', { toolCallId: 'complete', success: true });
+				assert.deepStrictEqual(getActions(signals.slice(beforeCompletion)).map(action =>
+					action.type === ActionType.ChatResponsePart && action.part.kind === ResponsePartKind.Markdown ? action.part.content : action.type), ['Full explanation.']);
+			});
+		}
+
+		for (const rootAnswer of [false, true]) {
+			for (const childAnswer of [false, true]) {
+				test(`live completion summaries stay scoped to the child (root answer: ${rootAnswer}, child answer: ${childAnswer})`, async () => {
+					const { session, mockSession, signals } = await createAgentSession(disposables);
+					session.resetTurnState('answer-turn');
+					if (rootAnswer) {
+						mockSession.fire('assistant.message', { messageId: 'root-answer', content: 'Root answer.' });
+					}
+					const child = { agentId: 'child-agent' };
+					mockSession.fire('subagent.started', { toolCallId: 'child-task', agentName: 'explore', agentDisplayName: 'Explore', agentDescription: 'Explore the file' }, child);
+					if (childAnswer) {
+						mockSession.fire('assistant.message', { messageId: 'child-answer', content: 'Child answer.' }, child);
+					}
+					const beforeCompletion = signals.length;
+					mockSession.fire('tool.execution_start', { toolCallId: 'complete', toolName: 'task_complete', arguments: { summary: 'Child summary.' } }, child);
+					mockSession.fire('tool.execution_complete', { toolCallId: 'complete', success: true }, child);
+					assert.deepStrictEqual(signals.slice(beforeCompletion).flatMap(signal =>
+						signal.kind === 'action' && signal.action.type === ActionType.ChatResponsePart && signal.action.part.kind === ResponsePartKind.Markdown
+							? [{ scope: signal.parentToolCallId, content: signal.action.part.content }] : []), childAnswer ? [] : [{ scope: 'child-task', content: 'Child summary.' }]);
+				});
+			}
+		}
+
+		test('a failed task_complete retains its error output even after an answer', async () => {
+			const { session, mockSession, signals } = await createAgentSession(disposables);
+			session.resetTurnState('answer-turn');
+			mockSession.fire('assistant.message', { messageId: 'answer', content: 'Full explanation.' });
+			const beforeCompletion = signals.length;
+			mockSession.fire('tool.execution_start', { toolCallId: 'complete', toolName: 'task_complete', arguments: {} });
+			mockSession.fire('tool.execution_complete', { toolCallId: 'complete', success: false, error: { message: 'Completion failed.' } });
+			assert.deepStrictEqual(getActions(signals.slice(beforeCompletion)).map(action =>
+				action.type === ActionType.ChatResponsePart && action.part.kind === ResponsePartKind.Markdown ? action.part.content : action.type), ['Completion failed.']);
+		});
+
 		test('live task_complete emits the input summary when tool output is truncated', async () => {
 			const { mockSession, signals } = await createAgentSession(disposables);
 
@@ -11620,7 +11694,7 @@ Use the attached image as context.
 			assert.deepStrictEqual(responsePart.part, {
 				kind: ResponsePartKind.Markdown,
 				id: responsePart.part.id,
-				content: '\n\n**Task completed:** Completed the requested work.',
+				content: 'Completed the requested work.',
 			});
 		});
 
@@ -12795,7 +12869,7 @@ Use the attached image as context.
 
 				assert.deepStrictEqual(fusionTranscript(signals), [
 					'subagent_started fusion:fusion-1:phase-1',
-					'fusion:fusion-1:phase-1: \n\n**Task completed:** Phase summary',
+					'fusion:fusion-1:phase-1: Phase summary',
 				]);
 			});
 		}

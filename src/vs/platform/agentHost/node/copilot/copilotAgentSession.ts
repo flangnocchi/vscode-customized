@@ -736,6 +736,9 @@ class CopilotTurn extends Disposable {
 	 */
 	readonly markdownPartIds = new Map<string, string>();
 
+	/** Chats with nonempty assistant text since their last work tool started. */
+	readonly assistantAnswerScopes = new Set<string>();
+
 	/** Current reasoning response part IDs for this turn, keyed by `parentToolCallId ?? ''`. */
 	readonly reasoningPartIds = new Map<string, string>();
 
@@ -1476,6 +1479,12 @@ export class CopilotAgentSession extends Disposable {
 			this._logService.error(`[Copilot:${this.sessionId}] ${action.type} emitted after cancellation; dropping`);
 			return;
 		}
+		const assistantContent = action.type === ActionType.ChatResponsePart && action.part.kind === ResponsePartKind.Markdown
+			? action.part.content
+			: action.type === ActionType.ChatDelta ? action.content : undefined;
+		if (assistantContent?.trim().length) {
+			this._currentTurn.value?.assistantAnswerScopes.add(parentToolCallId ?? '');
+		}
 		this._onDidSessionProgress.fire({
 			kind: 'action',
 			resource: isChatAction(action) ? this._chatChannelUri : this._ownerSessionUri,
@@ -1691,6 +1700,7 @@ export class CopilotAgentSession extends Disposable {
 			this._rootTurnIdBySubagentToolCallId.set(parentToolCallId, this._currentTurn.value.id);
 		}
 		this._activeSubagentAgentIds.add(e.agentId);
+		this._currentTurn.value?.assistantAnswerScopes.delete(parentToolCallId);
 		this._subagentObservedTokenUsage.set(parentToolCallId, new ObservedTokenUsage());
 		this._subagentTaskStatusRevision++;
 		this._onDidSessionProgress.fire({
@@ -5916,6 +5926,7 @@ export class CopilotAgentSession extends Disposable {
 				this._beginToolCallRound(parentToolCallId);
 				return;
 			}
+			this._currentTurn.value?.assistantAnswerScopes.delete(parentToolCallId ?? '');
 
 			if (!streamed?.started) {
 				this._beginToolCallRound(parentToolCallId);
@@ -6057,14 +6068,14 @@ export class CopilotAgentSession extends Disposable {
 			const toolOutput = e.data.error?.message ?? e.data.result?.content;
 
 			if (isTaskCompleteTool(tracked.toolName)) {
-				const summary = getTaskCompleteMarkdown(tracked.parameters, toolOutput);
+				const summary = getTaskCompleteMarkdown(tracked.parameters, toolOutput,
+					e.data.success && this._currentTurn.value?.assistantAnswerScopes.has(parentToolCallId ?? ''));
 				if (summary) {
-					const summaryParentToolCallId = parentToolCallId && this._fusionPhaseLabels.has(parentToolCallId) ? parentToolCallId : undefined;
 					this._emitAction({
 						type: ActionType.ChatResponsePart,
 						turnId: this._turnId,
 						part: { kind: ResponsePartKind.Markdown, id: generateUuid(), content: summary },
-					}, summaryParentToolCallId);
+					}, parentToolCallId);
 				}
 				return;
 			}

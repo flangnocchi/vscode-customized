@@ -3,18 +3,26 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { Raw } from '@vscode/prompt-tsx';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChatRequest, ChatResponseStream, LanguageModelToolInformation } from 'vscode';
 import { IChatHookService } from '../../../../platform/chat/common/chatHookService';
 import { ChatFetchResponseType, ChatResponse } from '../../../../platform/chat/common/commonTypes';
+import { IConfigurationService } from '../../../../platform/configuration/common/configurationService';
+import { IEndpointProvider } from '../../../../platform/endpoint/common/endpointProvider';
+import { MockEndpoint } from '../../../../platform/endpoint/test/node/mockEndpoint';
+import type { IChatEndpoint, IEmbeddingsEndpoint } from '../../../../platform/networking/common/networking';
 import { SpyChatResponseStream } from '../../../../util/common/test/mockChatResponseStream';
 import { CancellationToken, CancellationTokenSource } from '../../../../util/vs/base/common/cancellation';
+import { Event } from '../../../../util/vs/base/common/event';
 import { DisposableStore } from '../../../../util/vs/base/common/lifecycle';
 import { generateUuid } from '../../../../util/vs/base/common/uuid';
 import { IInstantiationService } from '../../../../util/vs/platform/instantiation/common/instantiation';
+import { SyncDescriptor } from '../../../../util/vs/platform/instantiation/common/descriptors';
 import { Conversation, Turn } from '../../../prompt/common/conversation';
 import { IBuildPromptContext, IToolCall, IToolCallRound } from '../../../prompt/common/intents';
-import { IBuildPromptResult, nullRenderPromptResult } from '../../../prompt/node/intents';
+import { IBuildPromptResult, nullRenderPromptResult, promptResultMetadata } from '../../../prompt/node/intents';
+import { ToolFailureEncountered, ToolResultMetadata } from '../../../prompts/node/panel/toolCalling';
 import { createExtensionUnitTestingServices } from '../../../test/node/services';
 import { ToolName } from '../../../tools/common/toolNames';
 import { IToolsService } from '../../../tools/common/toolsService';
@@ -27,8 +35,11 @@ import { MockChatHookService } from './mockChatHookService';
  * Concrete test implementation that exposes autopilot-related protected methods.
  */
 class AutopilotTestToolCallingLoop extends ToolCallingLoop<IToolCallingLoopOptions> {
+	promptResult: IBuildPromptResult = nullRenderPromptResult();
+	fetchCalls = 0;
+
 	protected override async buildPrompt(_buildPromptContext: IBuildPromptContext): Promise<IBuildPromptResult> {
-		return nullRenderPromptResult();
+		return this.promptResult;
 	}
 
 	protected override async getAvailableTools(): Promise<LanguageModelToolInformation[]> {
@@ -36,6 +47,7 @@ class AutopilotTestToolCallingLoop extends ToolCallingLoop<IToolCallingLoopOptio
 	}
 
 	protected override async fetch(): Promise<never> {
+		this.fetchCalls++;
 		throw new Error('fetch should not be called in these tests');
 	}
 
@@ -102,6 +114,17 @@ class AutopilotTestToolCallingLoop extends ToolCallingLoop<IToolCallingLoopOptio
 	}
 }
 
+/** Completion tests exercise the loop without model metadata caches or network calls. */
+class AutopilotTestEndpointProvider implements IEndpointProvider {
+	declare readonly _serviceBrand: undefined;
+	readonly onDidModelsRefresh = Event.None;
+	constructor(@IInstantiationService private readonly _instantiationService: IInstantiationService) { }
+	async getAllCompletionModels() { return []; }
+	async getAllChatEndpoints(): Promise<IChatEndpoint[]> { return [await this.getChatEndpoint()]; }
+	async getChatEndpoint(): Promise<IChatEndpoint> { return this._instantiationService.createInstance(MockEndpoint, 'test'); }
+	async getEmbeddingsEndpoint(): Promise<IEmbeddingsEndpoint> { throw new Error('Not used by autopilot tests'); }
+}
+
 function createMockChatRequest(overrides: Partial<ChatRequest> = {}): ChatRequest {
 	return {
 		prompt: 'test prompt',
@@ -161,16 +184,20 @@ describe('ToolCallingLoop autopilot', () => {
 	let disposables: DisposableStore;
 	let instantiationService: IInstantiationService;
 	let tokenSource: CancellationTokenSource;
+	let configurationService: IConfigurationService;
+	let mockChatHookService: MockChatHookService;
 
 	beforeEach(() => {
 		disposables = new DisposableStore();
-		const mockChatHookService = new MockChatHookService();
+		mockChatHookService = new MockChatHookService();
 
 		const serviceCollection = disposables.add(createExtensionUnitTestingServices());
 		serviceCollection.define(IChatHookService, mockChatHookService);
+		serviceCollection.define(IEndpointProvider, new SyncDescriptor(AutopilotTestEndpointProvider));
 
 		const accessor = serviceCollection.createTestingAccessor();
 		instantiationService = accessor.get(IInstantiationService);
+		configurationService = accessor.get(IConfigurationService);
 
 		tokenSource = new CancellationTokenSource();
 		disposables.add(tokenSource);
@@ -199,6 +226,75 @@ describe('ToolCallingLoop autopilot', () => {
 		disposables.add(loop);
 		return loop;
 	}
+
+	describe('completion after an existing answer', () => {
+		function prepareCompletion(loop: AutopilotTestToolCallingLoop, response = 'Full explanation.', toolNames = ['task_complete'], includeResults = true, failed = false): IToolCallRound {
+			const round = createMockRound(toolNames, response);
+			loop.addToolCallRound(round);
+			const results = includeResults ? round.toolCalls.map(toolCall => new ToolResultMetadata(toolCall.id, new LanguageModelToolResult2([new LanguageModelTextPart('Completed.')]))) : [];
+			loop.promptResult = {
+				...nullRenderPromptResult(),
+				messages: [{ role: Raw.ChatRole.User, content: [{ type: Raw.ChatCompletionContentPartKind.Text, text: 'Test prompt' }] }],
+				metadata: promptResultMetadata(failed ? [...results, new ToolFailureEncountered(round.toolCalls[0].id)] : results),
+			};
+			return round;
+		}
+
+		it('processes the completion result and preserves the answer without another model call', async () => {
+			const loop = createLoop('autopilot');
+			const round = prepareCompletion(loop);
+			const result = await loop.runOne(undefined, 1, tokenSource.token);
+			expect(loop.fetchCalls).toBe(0);
+			expect(loop.testGetToolCallResult(round.toolCalls[0].id)).toBeDefined();
+			expect(result.response.type).toBe(ChatFetchResponseType.Success);
+			expect(result.round.response).toBe('');
+			expect(result.round.toolCalls).toEqual([]);
+			loop.addToolCallRound(result.round);
+			expect(loop.testGetPersistableToolCallingState().toolCallRounds).toEqual([round]);
+		});
+
+		for (const scenario of ['no answer', 'whitespace', 'missing result', 'failed tool', 'productive tool', 'agent mode', 'advanced autopilot', 'pre hook', 'post hook'] as const) {
+			it(`keeps the model round for ${scenario}`, async () => {
+				const hooks: ChatRequest['hooks'] = scenario === 'pre hook' ? { PreToolUse: [{ command: 'check' }] } : scenario === 'post hook' ? { PostToolUse: [{ command: 'check' }] } : undefined;
+				const loop = createLoop(scenario === 'agent mode' ? 'autoApprove' : 'autopilot', { hooks });
+				prepareCompletion(loop,
+					scenario === 'no answer' ? '' : scenario === 'whitespace' ? '   ' : 'Full explanation.',
+					scenario === 'productive tool' ? ['task_complete', ToolName.ReadFile] : ['task_complete'],
+					scenario !== 'missing result', scenario === 'failed tool');
+				if (scenario === 'advanced autopilot') {
+					vi.spyOn(configurationService, 'getNonExtensionConfig').mockImplementation(key => key === 'chat.autopilot.advanced.enabled' ? true : undefined);
+				}
+				await expect(loop.runOne(undefined, 1, tokenSource.token)).rejects.toThrow('fetch should not be called in these tests');
+				expect(loop.fetchCalls).toBe(1);
+			});
+		}
+
+		it('honors cancellation before accepting completion', async () => {
+			const loop = createLoop('autopilot');
+			prepareCompletion(loop);
+			tokenSource.cancel();
+			await expect(loop.runOne(undefined, 1, tokenSource.token)).rejects.toThrow();
+			expect(loop.fetchCalls).toBe(0);
+		});
+
+		it('still executes Stop hooks before stopping', async () => {
+			const loop = createLoop('autopilot');
+			const round = prepareCompletion(loop);
+			const result = await loop.run(undefined, tokenSource.token);
+			expect(mockChatHookService.getCallsForHook('Stop')).toHaveLength(1);
+			expect(loop.fetchCalls).toBe(0);
+			expect(result.toolCallRounds).toEqual([round]);
+		});
+
+		it('continues when a Stop hook blocks completion', async () => {
+			mockChatHookService.setHookResults('Stop', [{ resultKind: 'success', output: { hookSpecificOutput: { decision: 'block', reason: 'Run the tests first.' } } }]);
+			const loop = createLoop('autopilot');
+			prepareCompletion(loop);
+			await expect(loop.run(undefined, tokenSource.token)).rejects.toThrow('fetch should not be called in these tests');
+			expect(mockChatHookService.getCallsForHook('Stop')).toHaveLength(1);
+			expect(loop.fetchCalls).toBe(1);
+		});
+	});
 
 	describe('voice progress', () => {
 		it('classifies read and planning tools as semantic progress', () => {

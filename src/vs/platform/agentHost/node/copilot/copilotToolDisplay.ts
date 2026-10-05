@@ -460,15 +460,11 @@ export function getTaskCompleteSummary(parameters: Record<string, unknown> | und
 }
 
 /**
- * Formats the Autopilot completion summary as the markdown response part
- * content, including the localized prefix.
+ * Uses the completion summary as a fallback when the assistant has not already
+ * provided an answer. Completion bookkeeping must not replace that answer.
  */
-export function getTaskCompleteMarkdown(parameters: Record<string, unknown> | undefined, toolOutput: string | undefined): string | undefined {
-	const summary = getTaskCompleteSummary(parameters, toolOutput);
-	if (!summary) {
-		return undefined;
-	}
-	return '\n\n' + localize('toolMarkdown.taskComplete', "**Task completed:** {0}", summary);
+export function getTaskCompleteMarkdown(parameters: Record<string, unknown> | undefined, toolOutput: string | undefined, hasAnswer = false): string | undefined {
+	return hasAnswer ? undefined : getTaskCompleteSummary(parameters, toolOutput);
 }
 
 /**

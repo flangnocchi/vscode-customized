@@ -162,7 +162,7 @@ suite('copilotToolDisplay — markdown-rendered tools', () => {
 	});
 
 	test('getToolMarkdownContent returns the task_complete summary when present', () => {
-		assert.strictEqual(getToolMarkdownContent('task_complete', { summary: 'All tests pass.' }), '\n\n**Task completed:** All tests pass.');
+		assert.strictEqual(getToolMarkdownContent('task_complete', { summary: 'All tests pass.' }), 'All tests pass.');
 	});
 
 	test('getTaskCompleteMarkdown prefers the input summary over truncated tool output', () => {
@@ -171,8 +171,8 @@ suite('copilotToolDisplay — markdown-rendered tools', () => {
 			withSummary: getTaskCompleteMarkdown({ summary: 'Completed the requested work.' }, truncatedOutput),
 			withoutSummary: getTaskCompleteMarkdown({}, 'Fallback summary.'),
 		}, {
-			withSummary: '\n\n**Task completed:** Completed the requested work.',
-			withoutSummary: '\n\n**Task completed:** Fallback summary.',
+			withSummary: 'Completed the requested work.',
+			withoutSummary: 'Fallback summary.',
 		});
 	});
 
