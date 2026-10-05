@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { IDirectLanguageModelService } from '../../../node/directLanguageModelService.js';
+import { createTestDirectLanguageModelService } from '../testDirectLanguageModelService.js';
 import assert from 'assert';
 import { IAgentHostStartupPerformance, NullAgentHostStartupPerformance } from '../../../node/agentHostStartupPerformance.js';
 import * as sinon from 'sinon';
@@ -71,6 +73,7 @@ function createHarness(disposables: Pick<DisposableStore, 'add'>, fetch: FetchFu
 	instantiationService.stub(ITelemetryService, telemetry);
 	instantiationService.stub(ICopilotApiService, apiService);
 	instantiationService.stub(IAgentConfigurationService, configurationService);
+	instantiationService.stub(IDirectLanguageModelService, createTestDirectLanguageModelService());
 	instantiationService.stub(IAgentHostGitHubEndpointService, endpoints);
 	instantiationService.stub(ISessionDataService, createNullSessionDataService());
 	instantiationService.stub(ICodexProxyService, disposables.add(new CodexProxyService(undefined, logService, apiService)));

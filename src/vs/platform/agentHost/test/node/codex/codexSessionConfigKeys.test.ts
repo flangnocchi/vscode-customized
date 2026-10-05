@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { IDirectLanguageModelService } from '../../../node/directLanguageModelService.js';
+import { createTestDirectLanguageModelService } from '../testDirectLanguageModelService.js';
 import assert from 'assert';
 import { IAgentHostStartupPerformance, NullAgentHostStartupPerformance } from '../../../node/agentHostStartupPerformance.js';
 import { Event } from '../../../../../base/common/event.js';
@@ -46,6 +48,7 @@ function createAgent(disposables: Pick<DisposableStore, 'add'>): CodexAgent {
 		onDidRootConfigChange: Event.None,
 		getRootValue: () => undefined,
 	});
+	instantiationService.stub(IDirectLanguageModelService, createTestDirectLanguageModelService());
 	instantiationService.stub(IAgentHostWorktreeIsolation, new NullAgentHostWorktreeIsolation());
 	instantiationService.stub(IAgentHostStartupPerformance, NullAgentHostStartupPerformance);
 	instantiationService.stub(IAgentHostCustomizationEnablementService, createNoopCustomizationEnablementService());

@@ -26,6 +26,7 @@ import { AgentSdkSetupChannel } from '../agentSdkSetupChannel.js';
 import { decodeProviderData, encodeProviderData, type IPersistedChat } from '../agentChatBackings.js';
 import { AgentHostConfigKey, agentHostCustomizationConfigSchema } from '../../common/agentHostCustomizationConfig.js';
 import { AgentHostAutoApprovePolicyRestrictedConfigKey, AgentHostClaudeMultiRootEnabledConfigKey, createSchema, platformRootSchema, platformSessionSchema, schemaProperty } from '../../common/agentHostSchema.js';
+import { IDirectLanguageModelService, isDirectLanguageModelSelection } from '../directLanguageModelService.js';
 import { ClaudePermissionMode, ClaudeSessionConfigKey, narrowClaudePermissionMode } from '../../common/claudeSessionConfigKeys.js';
 import { createClaudeThinkingLevelSchema, isClaudeEffortLevel } from '../../common/claudeModelConfig.js';
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
@@ -632,9 +633,12 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		@INativeEnvironmentService private readonly _environmentService: INativeEnvironmentService,
 		@IFileService private readonly _fileService: IFileService,
 		@IAgentHostStartupPerformance private readonly _startupPerformance: IAgentHostStartupPerformance,
+		@IDirectLanguageModelService private readonly _directModels: IDirectLanguageModelService,
 	) {
 		super();
 		this._metadataStore = _instantiationService.createInstance(ClaudeSessionMetadataStore);
+		this._register(this._directModels.onDidChangeModels(() => this._publishModels()));
+		this._register(this._configurationService.onDidRootConfigChange(() => this._publishModels()));
 		this._register(this._gitHubEndpointService.onDidChange(() => {
 			this._gitHubEndpointGeneration++;
 			void this.authenticate(this._gitHubEndpointService.getCopilotResource().resource, '').catch(error =>
@@ -679,6 +683,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			restartChatDiscovery: () => this._restartChatDiscovery(),
 			refreshModels: () => this._startModelRefresh(),
 		}, this._configurationService, this._agentSdkDownloader, this._logService));
+		this._publishModels();
 	}
 
 	/**
@@ -753,6 +758,12 @@ export class ClaudeAgent extends Disposable implements IAgent {
 	 * Copilot sign-in.
 	 */
 	private _ensureAuthenticated(model?: ModelSelection): ClaudeTransport {
+		if (model && isDirectLanguageModelSelection(model.id)) {
+			if (!this._directModels.getModels('messages', this.id).some(candidate => candidate.id === model.id)) {
+				throw new Error('The selected direct Claude model is no longer available');
+			}
+			return { kind: 'direct', selectionId: model.id, resolveConnection: () => this._directModels.resolve(model.id, 'messages') };
+		}
 		const transport = resolveClaudeSessionTransport({
 			model,
 			defaultMode: this._defaultTransportMode(),
@@ -787,7 +798,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			this._proxyHandle = undefined;
 			oldHandle?.dispose();
 			if (changed) {
-				this._models.set([], undefined);
+				this._publishModels([]);
 				void this._startModelRefresh();
 			}
 			this._logService.info(changed ? '[Claude] Auth token cleared' : '[Claude] Auth token unchanged');
@@ -842,7 +853,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 				staleHandle.dispose();
 				// Drop the superseded account's entitlements; the refresh below re-lists
 				// native-only (no handle) and republishes the protected resources.
-				this._models.set([], undefined);
+				this._publishModels([]);
 			}
 			this._logService.warn('[Claude] Copilot proxy start failed; Copilot-routed models unavailable until the next sign-in', err);
 			void this._startModelRefresh();
@@ -871,7 +882,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		// in — the GitHub session resolves before the Copilot default account does,
 		// so the welcome flow still believes it is signed out.
 		if (oldHandle) {
-			this._models.set([], undefined);
+			this._publishModels([]);
 		}
 		void this._startModelRefresh();
 		return true;
@@ -970,11 +981,15 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			const nativeModels = settledCatalog(nativeOutcome, 'native');
 			const merged = mergeClaudeModelCatalogs(proxyModels, nativeModels);
 			this._logService.info(`[Claude] Models refreshed (merged). Count: ${merged.length}, ${merged.map(m => m.name).join(', ')}`);
-			this._models.set(merged, undefined);
+			this._publishModels(merged);
 		}
 		// Last, never first: announcing `ready` before the catalog lands is exactly
 		// how the window renders "no account found".
 		this._sdkSetupChannel.refresh();
+	}
+
+	private _publishModels(models = this._models.get().filter(model => !isDirectLanguageModelSelection(model.id))): void {
+		this._models.set([...models, ...this._directModels.getModels('messages', this.id)], undefined);
 	}
 
 	/**
@@ -2341,6 +2356,10 @@ export class ClaudeAgent extends Disposable implements IAgent {
 			// session's own reconciled view in that case.
 			if (current.customizations) {
 				session.setHostCustomizations(current.customizations);
+			}
+			if (session.provisionalModel && isDirectLanguageModelSelection(session.provisionalModel.id)) {
+				// A live SDK subprocess must not bypass a revoked BYOK selection on the next turn.
+				this._ensureAuthenticated(session.provisionalModel);
 			}
 			const switchTransport = session.hasPendingTransportSwitch ? this._ensureAuthenticated(session.provisionalModel) : undefined;
 			await session.send(this._buildSdkPrompt(session.sessionId, prompt, attachments, effectiveTurnId), effectiveTurnId, current.configurationResource, workingDirectories, switchTransport, resolveAgentHostInstructions(operationContext), clientTelemetryContext, !!operationContext && !URI.isUri(operationContext) && operationContext.agentMergeTurn === true);

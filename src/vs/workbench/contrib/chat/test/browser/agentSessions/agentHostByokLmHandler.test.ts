@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import assert from 'assert';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
@@ -18,7 +19,7 @@ import { IContextKey, IContextKeyService } from '../../../../../../platform/cont
 import { ChatEntitlementContextKeys, IChatEntitlementService } from '../../../../../services/chat/common/chatEntitlementService.js';
 import { AgentHostByokLmHandler } from '../../../browser/agentSessions/agentHost/agentHostByokLmHandler.js';
 import { SessionType } from '../../../common/chatSessionsService.js';
-import { ChatMessageRole, IChatMessage, IChatResponsePart, ILanguageModelChatMetadata, ILanguageModelChatRequestOptions, ILanguageModelChatResponse, ILanguageModelsService } from '../../../common/languageModels.js';
+import { ChatMessageRole, IChatMessage, IChatResponsePart, ILanguageModelChatMetadata, ILanguageModelChatRequestOptions, ILanguageModelChatResponse, ILanguageModelProviderDescriptor, ILanguageModelsService } from '../../../common/languageModels.js';
 
 interface ICapturedRequest {
 	modelId: string;
@@ -37,6 +38,8 @@ class TestLanguageModelsService extends mock<ILanguageModelsService>() {
 	captured: ICapturedRequest | undefined;
 
 	override readonly onDidChangeLanguageModels = Event.None;
+	override readonly onDidChangeLanguageModelVendors = Event.None;
+	override getVendors(): ILanguageModelProviderDescriptor[] { return []; }
 	override readonly onDidChangeModelVisibility: Event<void>;
 
 	constructor(
@@ -48,6 +51,8 @@ class TestLanguageModelsService extends mock<ILanguageModelsService>() {
 		super();
 		this.onDidChangeModelVisibility = onDidChangeModelVisibility;
 	}
+
+	override async selectLanguageModels() { return this.getLanguageModelIds(); }
 
 	override getLanguageModelIds(): string[] {
 		return [...this._models.keys()];
@@ -117,8 +122,58 @@ suite('AgentHostByokLmHandler', () => {
 
 	function createHandler(service: ILanguageModelsService): AgentHostByokLmHandler {
 		const { contextKeyService } = createPolicyContext(true);
-		return store.add(new AgentHostByokLmHandler(service, new NullLogService(), new TestChatEntitlementService(contextKeyService), contextKeyService));
+		return store.add(new AgentHostByokLmHandler(service, new NullLogService(), new TestChatEntitlementService(contextKeyService), contextKeyService, new class extends mock<ICommandService>() {}()));
 	}
+
+	test('discovers direct source vendors before reading a cold LM cache, without resolving Agent Host copies', async () => {
+		const models = new Map<string, ILanguageModelChatMetadata>();
+		const selections: string[] = [];
+		const service = new class extends TestLanguageModelsService {
+			override getVendors(): ILanguageModelProviderDescriptor[] {
+				return [
+					{ vendor: '9router', displayName: '9Router', isDefault: false, configuration: undefined, managementCommand: undefined, when: undefined, directConnection: { command: 'test.resolve', protocols: ['messages', 'responses'] } },
+					{ vendor: 'agent-host-claude', displayName: 'Claude', isDefault: false, configuration: undefined, managementCommand: undefined, when: undefined },
+				];
+			}
+			override async selectLanguageModels(selector?: { vendor?: string }) {
+				selections.push(selector?.vendor ?? 'all');
+				models.set('9router/Group/model', byokModel('9router', 'model', { toolCalling: true }));
+				return this.getLanguageModelIds();
+			}
+		}(models, () => responseOf([]));
+		const handler = createHandler(service);
+		const discovered = await handler.listModels(CancellationToken.None);
+		assert.deepStrictEqual({ selections, ids: discovered.map(model => model.modelIdentifier), protocols: discovered[0]?.directConnectionProtocols }, {
+			selections: ['9router'], ids: ['9router/Group/model'], protocols: ['messages', 'responses'],
+		});
+	});
+
+	test('direct resolver uses the selected model configuration group, and policy blocks its command', async () => {
+		const identifier = '9router/Group B/shared-model';
+		const metadata = byokModel('9router', 'shared-model', { toolCalling: true });
+		const service = new class extends TestLanguageModelsService {
+			override getVendors(): ILanguageModelProviderDescriptor[] {
+				return [{ vendor: '9router', displayName: '9Router', isDefault: false, configuration: undefined, managementCommand: undefined, when: undefined, directConnection: { command: 'test.resolve', protocols: ['messages', 'responses'] } }];
+			}
+			override async resolveLanguageModelProviderConfiguration() { return { apiKey: 'test-group-b' }; }
+		}(new Map([[identifier, metadata]]), () => responseOf([]));
+		let captured: unknown;
+		const commands = new class extends mock<ICommandService>() {
+			override async executeCommand<T>(_command: string, argument: unknown): Promise<T> {
+				captured = argument;
+				return { baseUrl: 'http://localhost', modelId: metadata.id } as T;
+			}
+		};
+		const { contextKeyService, clientByokEnabled } = createPolicyContext(true);
+		const handler = store.add(new AgentHostByokLmHandler(service, new NullLogService(), new TestChatEntitlementService(contextKeyService), contextKeyService, commands));
+		const models = await handler.listModels(CancellationToken.None);
+		await handler.resolveDirectConnection({ modelIdentifier: identifier, protocol: 'messages' });
+		assert.deepStrictEqual({ captured, protocols: models[0].directConnectionProtocols, secretsInCatalogue: JSON.stringify(models).includes('test-group-b') }, {
+			captured: { modelId: 'shared-model', protocol: 'messages', configuration: { apiKey: 'test-group-b' } }, protocols: ['messages', 'responses'], secretsInCatalogue: false,
+		});
+		clientByokEnabled.set(false);
+		await assert.rejects(handler.resolveDirectConnection({ modelIdentifier: identifier, protocol: 'messages' }), /unavailable/);
+	});
 
 	test('updates model discovery and blocks requests when BYOK policy changes', async () => {
 		const service = new TestLanguageModelsService(
@@ -126,7 +181,7 @@ suite('AgentHostByokLmHandler', () => {
 			() => responseOf([]),
 		);
 		const { contextKeyService, clientByokEnabled } = createPolicyContext(true);
-		const handler = store.add(new AgentHostByokLmHandler(service, new NullLogService(), new TestChatEntitlementService(contextKeyService), contextKeyService));
+		const handler = store.add(new AgentHostByokLmHandler(service, new NullLogService(), new TestChatEntitlementService(contextKeyService), contextKeyService, new class extends mock<ICommandService>() {}()));
 		let modelChangeCount = 0;
 		store.add(handler.onDidChangeModels(() => modelChangeCount++));
 
@@ -243,7 +298,7 @@ suite('AgentHostByokLmHandler', () => {
 				supportsVision: false,
 			}],
 			sourceHiddenModels: [],
-			copyHiddenModels: [],
+			copyHiddenModels: visibleModels.map(model => ({ ...model, hiddenForCopilot: true })),
 			restoredModels: [{
 				vendor: 'openrouter',
 				id: 'ai21/jamba-large-1.7',

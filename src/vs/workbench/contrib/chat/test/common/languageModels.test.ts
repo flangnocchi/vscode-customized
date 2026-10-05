@@ -1706,6 +1706,34 @@ suite('LanguageModels - Provider Group Management', function () {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('direct connection configuration resolves secrets for the exact registered group', async function () {
+		providerGroups.push({ vendor: 'custom-vendor', name: 'Second Group', apiKey: '${input:second-secret}' });
+		await secretStorageService.set('existing-secret', 'test-first-key');
+		await secretStorageService.set('second-secret', 'test-second-key');
+		const registration = languageModelsService.registerLanguageModelProvider('custom-vendor', {
+			onDidChange: Event.None,
+			provideLanguageModelChatInfo: async options => options.group ? [{
+				identifier: `custom-vendor/${options.group}/shared-model`,
+				metadata: {
+					extension: nullExtensionDescription.identifier, name: 'Shared', vendor: 'custom-vendor',
+					id: 'shared-model', family: 'shared', version: '1', maxInputTokens: 100,
+					maxOutputTokens: 100, isDefaultForLocation: {},
+				},
+			}] : [],
+			sendChatRequest: async () => { throw new Error('Not used'); },
+			provideTokenCount: async () => { throw new Error('Not used'); },
+		});
+		try {
+			await languageModelsService.selectLanguageModels({ vendor: 'custom-vendor' });
+			const first = await languageModelsService.resolveLanguageModelProviderConfiguration('custom-vendor/Custom Group/shared-model');
+			const second = await languageModelsService.resolveLanguageModelProviderConfiguration('custom-vendor/Second Group/shared-model');
+			assert.deepStrictEqual({ first: first?.apiKey, second: second?.apiKey }, { first: 'test-first-key', second: 'test-second-key' });
+			await assert.rejects(languageModelsService.resolveLanguageModelProviderConfiguration('custom-vendor/Missing/shared-model'), /no longer registered/);
+		} finally {
+			registration.dispose();
+		}
+	});
+
 	test('renameLanguageModelsProviderGroup updates only the selected group name', async function () {
 		acceptedInputValues.push('Renamed Group');
 

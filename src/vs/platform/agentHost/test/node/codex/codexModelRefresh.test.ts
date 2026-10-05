@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { IDirectLanguageModelService } from '../../../node/directLanguageModelService.js';
+import { createTestDirectLanguageModelService } from '../testDirectLanguageModelService.js';
 import type { CCAModel } from '@vscode/copilot-api';
 import assert from 'assert';
 import { IAgentHostStartupPerformance, NullAgentHostStartupPerformance } from '../../../node/agentHostStartupPerformance.js';
@@ -60,7 +62,7 @@ interface ITestAgentContext {
  * running the suite has `@openai/codex` in `node_modules`. Tests wanting the
  * cold case override `_isSdkResolvableWithoutDownload` directly.
  */
-function createAgentContext(disposables: Pick<DisposableStore, 'add'>, models: () => Promise<CCAModel[]>, rootConfig: Record<string, boolean> = {}, sdkDownloader = new RecordingAgentSdkDownloader()): ITestAgentContext {
+function createAgentContext(disposables: Pick<DisposableStore, 'add'>, models: () => Promise<CCAModel[]>, rootConfig: Record<string, boolean> = {}, sdkDownloader = new RecordingAgentSdkDownloader(), directModels = createTestDirectLanguageModelService()): ITestAgentContext {
 	const instantiationService = new TestInstantiationService();
 	const logService = new NullLogService();
 	const stateManager = disposables.add(new AgentHostStateManager(logService));
@@ -70,6 +72,7 @@ function createAgentContext(disposables: Pick<DisposableStore, 'add'>, models: (
 	instantiationService.stub(ICopilotApiService, { _serviceBrand: undefined, models });
 	instantiationService.stub(ICodexProxyService, { _serviceBrand: undefined });
 	instantiationService.stub(IAgentConfigurationService, configurationService);
+	instantiationService.stub(IDirectLanguageModelService, directModels);
 	instantiationService.stub(IAgentHostWorktreeIsolation, new NullAgentHostWorktreeIsolation());
 	instantiationService.stub(IAgentHostStartupPerformance, NullAgentHostStartupPerformance);
 	instantiationService.stub(IAgentHostCustomizationEnablementService, createNoopCustomizationEnablementService());
@@ -156,6 +159,30 @@ function createChatGPTConnection(account: unknown = { type: 'chatgpt', email: 'p
 suite('CodexAgent model refresh', () => {
 
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('direct models publish without Copilot auth and resolve per-thread provider configuration afresh', async () => {
+		const id = '@provider=vscode-byok-test:ark%2Fglm-5.3-flash';
+		let resolves = 0;
+		const directModels = createTestDirectLanguageModelService({
+			getModels: () => [{ id, name: 'Gateway', provider: 'codex', supportsVision: false }],
+			resolve: async (_id, protocol) => {
+				assert.strictEqual(protocol, 'responses');
+				resolves++;
+				return { baseUrl: 'http://localhost:20128/v1', modelId: 'ark/glm-5.3-flash', headers: { Authorization: `Bearer test-${resolves}` } };
+			},
+		});
+		const { agent } = createAgentContext(disposables, async () => [], {}, new RecordingAgentSdkDownloader(), directModels);
+		agent['_publishModels']();
+		agent['_ensureModelProviderAuthenticated']({ id });
+		assert.throws(() => agent['_supportedModelOrUndefined']({ id: '@provider=vscode-byok-missing:model' }), /no longer available/);
+		const first = await agent['_directModelConfigOverrides']({ id });
+		const second = await agent['_directModelConfigOverrides']({ id });
+		assert.deepStrictEqual({ models: agent.models.get().map(model => model.id), first, second, resolves }, {
+			models: [id], resolves: 2,
+			first: { model_providers: { 'vscode-byok-test': { name: 'VS Code BYOK', base_url: 'http://localhost:20128/v1', wire_api: 'responses', requires_openai_auth: false, supports_websockets: false, http_headers: { Authorization: 'Bearer test-1' } } } },
+			second: { model_providers: { 'vscode-byok-test': { name: 'VS Code BYOK', base_url: 'http://localhost:20128/v1', wire_api: 'responses', requires_openai_auth: false, supports_websockets: false, http_headers: { Authorization: 'Bearer test-2' } } } },
+		});
+	});
 
 	test('keeps the persistent app-server stopped until a Codex session is selected', async () => {
 		const agent = createAgent(disposables, async () => [], { [AgentHostConfigKey.AllowSignedOutWhenUsable]: true });

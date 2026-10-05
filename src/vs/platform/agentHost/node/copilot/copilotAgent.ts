@@ -2396,7 +2396,7 @@ export class CopilotAgent extends Disposable implements IAgent {
 			this._publishModels();
 			return;
 		}
-		this._byokModels = this._byokBridgeRegistry.getModels().map((m): IAgentModelInfo => {
+		this._byokModels = this._byokBridgeRegistry.getModels().filter(model => !model.hiddenForCopilot).map((m): IAgentModelInfo => {
 			const byokMeta = createAgentModelByokMeta(m.modelIdentifier);
 			const thinkingLevel = this._createThinkingLevelConfigSchemaProperty(m.supportedReasoningEfforts, m.defaultReasoningEffort, m.id);
 			return {

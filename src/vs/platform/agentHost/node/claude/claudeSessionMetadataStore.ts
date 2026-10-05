@@ -36,7 +36,7 @@ export interface IClaudeSessionOverlay {
 	 * transport resolution in v1 (transport is resolved host-level). Lets a
 	 * future per-session-transport feature land without a data migration.
 	 */
-	readonly transport?: 'proxy' | 'native';
+	readonly transport?: 'proxy' | 'native' | 'direct';
 }
 
 /**
@@ -50,7 +50,7 @@ export interface IClaudeSessionOverlayUpdate {
 	readonly permissionMode?: ClaudePermissionMode;
 	readonly agent?: AgentSelection | null;
 	readonly workingDirectories?: readonly URI[];
-	readonly transport?: 'proxy' | 'native';
+	readonly transport?: 'proxy' | 'native' | 'direct';
 }
 
 /**
@@ -171,7 +171,7 @@ export class ClaudeSessionMetadataStore {
 				model: parseModelSelection(modelRaw),
 				permissionMode: narrowClaudePermissionMode(permissionModeRaw),
 				agent: parseAgentSelection(agentRaw),
-				transport: transportRaw === 'proxy' || transportRaw === 'native' ? transportRaw : undefined,
+				transport: transportRaw === 'proxy' || transportRaw === 'native' || transportRaw === 'direct' ? transportRaw : undefined,
 				workingDirectories: parseWorkingDirectories(workingDirectoriesRaw),
 			};
 		} finally {

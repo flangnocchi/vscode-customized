@@ -18,7 +18,10 @@ import {
 	IByokLmModelInfo,
 	IByokLmOutputItem,
 	IByokLmReasoningItem,
+	IByokLmDirectConnection,
+	IByokLmDirectConnectionRequest,
 } from '../../../../../../platform/agentHost/common/agentHostByokLm.js';
+import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IContextKeyService } from '../../../../../../platform/contextkey/common/contextkey.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { ChatEntitlementContextKeys, IChatEntitlementService } from '../../../../../services/chat/common/chatEntitlementService.js';
@@ -60,6 +63,7 @@ export class AgentHostByokLmHandler extends Disposable implements IAgentHostByok
 		@ILogService private readonly _logService: ILogService,
 		@IChatEntitlementService private readonly _chatEntitlementService: IChatEntitlementService,
 		@IContextKeyService contextKeyService: IContextKeyService,
+		@ICommandService private readonly _commandService: ICommandService,
 	) {
 		super();
 		// Re-emit (debounced) whenever the renderer's language models change, so the
@@ -68,6 +72,7 @@ export class AgentHostByokLmHandler extends Disposable implements IAgentHostByok
 		this._register(Event.debounce(this._languageModelsService.onDidChangeLanguageModels, () => undefined, 500)(() => {
 			this._onDidChangeModels.fire();
 		}));
+		this._register(this._languageModelsService.onDidChangeLanguageModelVendors(() => this._onDidChangeModels.fire()));
 		this._register(this._languageModelsService.onDidChangeModelVisibility(() => {
 			this._onDidChangeModels.fire();
 		}));
@@ -158,8 +163,22 @@ export class AgentHostByokLmHandler extends Disposable implements IAgentHostByok
 		}
 	}
 
-	async listModels(_token: CancellationToken): Promise<IByokLmModelInfo[]> {
+	async listModels(token: CancellationToken): Promise<IByokLmModelInfo[]> {
 		if (!this._chatEntitlementService.clientByokEnabled) {
+			return [];
+		}
+
+		// Registration alone does not populate the LM cache. Resolve opted-in source
+		// vendors even when the user has never opened the Local model picker. Do not
+		// resolve Agent Host copies here, which would re-enter this bridge.
+		await Promise.all(this._languageModelsService.getVendors().filter(vendor => vendor.directConnection).map(async vendor => {
+			try {
+				await this._languageModelsService.selectLanguageModels({ vendor: vendor.vendor });
+			} catch {
+				this._logService.warn(`[AgentHostByokLmHandler] Direct model discovery failed for ${vendor.vendor}`);
+			}
+		}));
+		if (!this._chatEntitlementService.clientByokEnabled || token.isCancellationRequested) {
 			return [];
 		}
 
@@ -169,6 +188,7 @@ export class AgentHostByokLmHandler extends Disposable implements IAgentHostByok
 			// Only genuine renderer BYOK models — exclude agent-host copies, which
 			// carry a `targetChatSessionType` and would otherwise re-enter the bridge.
 			if (metadata?.isBYOK && !metadata.targetChatSessionType) {
+				const directConnection = this._languageModelsService.getVendors().find(vendor => vendor.vendor === metadata.vendor)?.directConnection;
 				const reasoningEffortSchema = metadata.configurationSchema?.properties?.reasoningEffort;
 				const supportedReasoningEfforts = reasoningEffortSchema?.enum?.filter((value): value is string => typeof value === 'string');
 				const defaultReasoningEffort = typeof reasoningEffortSchema?.default === 'string' ? reasoningEffortSchema.default : undefined;
@@ -177,6 +197,8 @@ export class AgentHostByokLmHandler extends Disposable implements IAgentHostByok
 					id: metadata.id,
 					name: metadata.name,
 					modelIdentifier: identifier,
+					...(directConnection ? { directConnectionProtocols: directConnection.protocols as IByokLmModelInfo['directConnectionProtocols'] } : {}),
+					...(metadata.capabilities?.toolCalling ? { supportsToolCalling: true } : {}),
 					maxContextWindowTokens: getModelContextWindowTotal(metadata),
 					maxPromptTokens: metadata.maxInputTokens,
 					maxOutputTokens: metadata.maxOutputTokens,
@@ -185,12 +207,26 @@ export class AgentHostByokLmHandler extends Disposable implements IAgentHostByok
 					...(defaultReasoningEffort !== undefined ? { defaultReasoningEffort } : {}),
 				};
 				const agentHostModelIdentifier = `${SessionType.AgentHostCopilot}:${getByokLmAgentModelId(model)}`;
-				if (!this._languageModelsService.isModelHidden(identifier) && !this._languageModelsService.isModelHidden(agentHostModelIdentifier)) {
-					models.push(model);
+				if (!this._languageModelsService.isModelHidden(identifier)) {
+					models.push({ ...model, ...(this._languageModelsService.isModelHidden(agentHostModelIdentifier) ? { hiddenForCopilot: true } : {}) });
 				}
 			}
 		}
 		return models;
+	}
+
+	async resolveDirectConnection(request: IByokLmDirectConnectionRequest): Promise<IByokLmDirectConnection> {
+		const metadata = this._languageModelsService.lookupLanguageModel(request.modelIdentifier);
+		const descriptor = this._languageModelsService.getVendors().find(vendor => vendor.vendor === metadata?.vendor)?.directConnection;
+		if (!this._chatEntitlementService.clientByokEnabled || !metadata?.isBYOK || metadata.targetChatSessionType || this._languageModelsService.isModelHidden(request.modelIdentifier) || !descriptor?.protocols.includes(request.protocol)) {
+			throw new Error('Direct language model connection is unavailable');
+		}
+		const configuration = await this._languageModelsService.resolveLanguageModelProviderConfiguration(request.modelIdentifier);
+		const connection = await this._commandService.executeCommand<IByokLmDirectConnection>(descriptor.command, { modelId: metadata.id, protocol: request.protocol, configuration });
+		if (!connection) {
+			throw new Error('The language model provider did not return a direct connection');
+		}
+		return connection;
 	}
 
 	/**

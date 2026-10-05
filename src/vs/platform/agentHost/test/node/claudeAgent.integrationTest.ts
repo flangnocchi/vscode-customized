@@ -33,6 +33,8 @@
  *    (no orphan resources).
  */
 
+import { IDirectLanguageModelService } from '../../node/directLanguageModelService.js';
+import { createTestDirectLanguageModelService } from './testDirectLanguageModelService.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { GetSessionMessagesOptions, Options, PermissionResult, Query, SDKControlInterruptResponse, SDKMessage, SDKResultSuccess, SDKSessionInfo, SDKSystemMessage, SDKUserMessage, SessionMessage, WarmQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CCAModel } from '@vscode/copilot-api';
@@ -737,6 +739,7 @@ suite('ClaudeAgent integration (proxy-backed)', function () {
 				basePath: URI.from({ scheme: 'inmemory', path: '/agentPlugins' }),
 				async syncCustomizations(_clientId: string, _customizations: ClientPluginCustomization[]) { return []; },
 			}],
+			[IDirectLanguageModelService, createTestDirectLanguageModelService()],
 			[IAgentConfigurationService, configService],
 			[IAgentHostOTelService, noopOTelService],
 			[IAgentHostStateManager, stateManager],
@@ -878,6 +881,7 @@ suite('ClaudeAgent integration (proxy-backed)', function () {
 				basePath: URI.from({ scheme: 'inmemory', path: '/agentPlugins' }),
 				async syncCustomizations(_clientId: string, _customizations: ClientPluginCustomization[]) { return []; },
 			}],
+			[IDirectLanguageModelService, createTestDirectLanguageModelService()],
 			[IAgentConfigurationService, configService],
 			[IAgentHostOTelService, noopOTelService],
 			[IAgentHostStateManager, stateManager],
@@ -961,6 +965,7 @@ suite('ClaudeAgent integration (proxy-backed)', function () {
 				basePath: URI.from({ scheme: 'inmemory', path: '/agentPlugins' }),
 				async syncCustomizations(_clientId: string, _customizations: ClientPluginCustomization[]) { return []; },
 			}],
+			[IDirectLanguageModelService, createTestDirectLanguageModelService()],
 			[IAgentConfigurationService, configService],
 			[IAgentHostOTelService, noopOTelService],
 			[IAgentHostStateManager, stateManager],

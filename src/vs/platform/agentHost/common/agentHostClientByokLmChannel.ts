@@ -15,6 +15,8 @@ import {
 	IByokLmChatRequest,
 	IByokLmChatResult,
 	IByokLmModelInfo,
+	IByokLmDirectConnectionRequest,
+	IByokLmDirectConnection,
 } from './agentHostByokLm.js';
 
 /**
@@ -36,6 +38,7 @@ export const AGENT_HOST_CLIENT_BYOK_LM_CHANNEL = 'agentHostClientByokLm';
  */
 export function createAgentHostClientByokLmConnection(channel: IChannel): IByokLmBridgeConnection {
 	return {
+		resolveDirectConnection: request => channel.call<IByokLmDirectConnection>('resolveDirectConnection', request),
 		chat: (request) => channel.call('chat', request) as Promise<IByokLmChatResult>,
 		onDidChangeModels: channel.listen<IByokLmModelInfo[]>('models'),
 	};
@@ -104,6 +107,12 @@ export class AgentHostClientByokLmChannel implements IServerChannel {
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown): Promise<T> {
 		switch (command) {
+			case 'resolveDirectConnection': {
+				if (!this._handler.resolveDirectConnection) {
+					throw new Error('Direct language model connections are unavailable');
+				}
+				return await this._handler.resolveDirectConnection(arg as IByokLmDirectConnectionRequest) as T;
+			}
 			case 'chat': {
 				const result = await this._handler.chat(arg as IByokLmChatRequest, CancellationToken.None);
 				return result as T;

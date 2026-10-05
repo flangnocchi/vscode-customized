@@ -29,6 +29,8 @@ export class NullLanguageModelsService implements ILanguageModelsService {
 	onDidChangePinnedModels = Event.None;
 	onDidChangeModelVisibility = Event.None;
 
+	async resolveLanguageModelProviderConfiguration(): Promise<undefined> { return undefined; }
+
 	getVendors(): ILanguageModelProviderDescriptor[] {
 		return [];
 	}

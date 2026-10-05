@@ -47,6 +47,19 @@ suite('agentHostClientByokLmChannel', () => {
 		return createAgentHostClientByokLmConnection(channel);
 	}
 
+	test('resolves direct connections over the private reverse channel without including secrets in models', async () => {
+		const handler = handlerOf(async () => ({ output: [] }));
+		const request = { modelIdentifier: '9router/Group/model', protocol: 'messages' as const };
+		let captured: unknown;
+		handler.resolveDirectConnection = async value => {
+			captured = value;
+			return { baseUrl: 'http://localhost', modelId: 'model', headers: { Authorization: 'Bearer test-only' } };
+		};
+		const connection = bridge(handler);
+		assert.deepStrictEqual(await connection.resolveDirectConnection?.(request), { baseUrl: 'http://localhost', modelId: 'model', headers: { Authorization: 'Bearer test-only' } });
+		assert.deepStrictEqual(captured, request);
+	});
+
 	test('round-trips a Responses request to the handler and back', async () => {
 		let seen: IByokLmChatRequest | undefined;
 		const connection = bridge(handlerOf(async (request) => {

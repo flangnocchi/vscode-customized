@@ -121,7 +121,8 @@ export async function buildOptions(
 	transport: ClaudeTransport,
 	logStderr: (data: string) => void,
 ): Promise<Options> {
-	const isProxy = transport.kind === 'proxy';
+	const isProxy = transport.kind !== 'native';
+	const direct = transport.kind === 'direct' ? await transport.resolveConnection() : undefined;
 	const subprocessEnv = buildSubprocessEnv(isProxy);
 	const telemetryEnv = buildClaudeTelemetryEnv(input.telemetry, input.traceContext);
 	Object.assign(subprocessEnv, telemetryEnv);
@@ -139,6 +140,18 @@ export async function buildOptions(
 				ANTHROPIC_AUTH_TOKEN: `${transport.handle.nonce}.${input.sessionId}`,
 			}
 			: {}),
+		...(direct ? {
+			ANTHROPIC_BASE_URL: direct.baseUrl,
+			// Explicitly override ambient/SDK settings credentials for the selected gateway.
+			ANTHROPIC_API_KEY: '',
+			ANTHROPIC_AUTH_TOKEN: Object.entries(direct.headers ?? {}).find(([name]) => name.toLowerCase() === 'authorization')?.[1].replace(/^Bearer\s+/i, '') ?? 'vscode-byok',
+			CLAUDE_CODE_OAUTH_TOKEN: '',
+			ANTHROPIC_CUSTOM_HEADERS: Object.entries(direct.headers ?? {}).filter(([name]) => name.toLowerCase() !== 'authorization').map(([name, value]) => `${name}: ${value}`).join('\n'),
+			ANTHROPIC_DEFAULT_OPUS_MODEL: direct.modelId,
+			ANTHROPIC_DEFAULT_SONNET_MODEL: direct.modelId,
+			ANTHROPIC_DEFAULT_HAIKU_MODEL: direct.modelId,
+			CLAUDE_CODE_SUBAGENT_MODEL: direct.modelId,
+		} : {}),
 		CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
 		USE_BUILTIN_RIPGREP: '0',
 		// Attribute the CLI's tool subprocesses (`gh`, …) to VS Code.

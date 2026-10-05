@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { IDirectLanguageModelService } from '../../../node/directLanguageModelService.js';
+import { createTestDirectLanguageModelService } from '../testDirectLanguageModelService.js';
 import assert from 'assert';
 import type { ChildProcessWithoutNullStreams } from 'child_process';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
@@ -154,6 +156,7 @@ function createHarness(store: DisposableStore, sessionData = createSessionDataSe
 	instantiation.stub(ILogService, log);
 	instantiation.stub(IFileService, files);
 	instantiation.stub(IAgentConfigurationService, config);
+	instantiation.stub(IDirectLanguageModelService, createTestDirectLanguageModelService());
 	instantiation.stub(ISessionDataService, sessionData);
 	instantiation.stub(ICopilotApiService, { models: async () => [] });
 	instantiation.stub(ICodexProxyService, {});
