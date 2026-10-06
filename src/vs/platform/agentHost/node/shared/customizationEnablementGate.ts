@@ -66,11 +66,17 @@ function applyClientGlobal(
 	session: URI,
 	target: ICustomizationEnablementTarget,
 	enablement: readonly CustomizationEnablement[] | undefined,
+	authoritative = false,
 ): CustomizationEnablementResolution {
 	if (enablement?.some(entry => entry.kind === CustomizationEnablementKind.Global) !== true) {
 		return service.resolve(session.toString(), target);
 	}
-	return service.applyClientGlobalEnablement(session.toString(), target, enablement);
+	const resolution = service.applyClientGlobalEnablement(session.toString(), target, enablement);
+	if (authoritative && target.isClientBundled && resolution.kind === 'resolved') {
+		const global = enablement.filter(entry => entry.kind === CustomizationEnablementKind.Global);
+		return { ...resolution, enablement: global, enabled: isCustomizationEnabled({ enablement: global }) };
+	}
+	return resolution;
 }
 
 /**
@@ -84,6 +90,7 @@ export function resolveCustomizationEnablement(
 	clientChildEnablement?: ReadonlyMap<string, Readonly<Record<string, readonly CustomizationEnablement[]>>>,
 	clientPlugins?: ReadonlyMap<string, ClientPluginCustomization>,
 	mcpServerOwners?: ReadonlyMap<string, string>,
+	authoritativeClientMcp = false,
 ): IResolvedCustomizationEnablement {
 	let pending = false;
 	const pendingCustomizationIds = new Set<string>();
@@ -94,7 +101,11 @@ export function resolveCustomizationEnablement(
 				owningPluginUri === undefined ? undefined : clientChildEnablement?.get(owningPluginUri),
 				customization.name,
 			);
-			const resolved = applyResolution(customization, service.resolve(session.toString(), targetForMcpServer(customization, owningPluginUri, isClientBundled)));
+			const target = targetForMcpServer(customization, owningPluginUri, isClientBundled);
+			const resolution = authoritativeClientMcp
+				? applyClientGlobal(service, session, target, owningPluginUri === undefined ? undefined : clientChildEnablement?.get(owningPluginUri)?.[customization.name], true)
+				: service.resolve(session.toString(), target);
+			const resolved = applyResolution(customization, resolution);
 			pending ||= resolved.pending;
 			if (resolved.pending) {
 				pendingCustomizationIds.add(customization.id);
@@ -121,6 +132,7 @@ export function resolveCustomizationEnablement(
 				session,
 				targetForMcpServer(child, pluginResolution.customization.uri, isClientBundled),
 				isClientBundled ? childEnablement![child.name] : undefined,
+				authoritativeClientMcp,
 			);
 			const resolved = applyResolution(child, resolution);
 			pending ||= resolved.pending;

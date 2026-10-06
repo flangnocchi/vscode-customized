@@ -6,10 +6,12 @@
 import type { McpServerConfig, OnElicitation, Options, PermissionMode, SDKUserMessage, SyncHookJSONOutput, WarmQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { Sequencer } from '../../../../base/common/async.js';
+import { basename } from '../../../../base/common/path.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { isEqual } from '../../../../base/common/resources.js';
+import { isEqual, isEqualOrParent } from '../../../../base/common/resources.js';
+import { AgentHostConfigKey, agentHostCustomizationConfigSchema } from '../../common/agentHostCustomizationConfig.js';
 import { URI } from '../../../../base/common/uri.js';
 import { INativeEnvironmentService } from '../../../environment/common/environment.js';
 import { IFileService } from '../../../files/common/files.js';
@@ -49,7 +51,7 @@ import { discoverClaudeMultiRootCustomizations } from './customizations/claudeMu
 import { resolvePromptToContentBlocks } from './claudePromptResolver.js';
 import type { ClaudeTransport } from './claudeProxyService.js';
 import { SessionMcpDiscovery } from '../shared/sessionMcpDiscovery.js';
-import { parsePlugin, type IMcpServerDefinition } from '../../../agentPlugins/common/pluginParsers.js';
+import { detectPluginFormat, parsePlugin, PluginFormat, readPluginManifest, type IMcpServerDefinition } from '../../../agentPlugins/common/pluginParsers.js';
 import { hasClientPluginMcpDefaultCwds, readClientPluginMcpDefaultCwd } from '../../common/meta/clientPluginCustomizationMeta.js';
 import { ClaudeSdkPipeline, IRematerializer, type ISdkResolvedCustomizations } from './claudeSdkPipeline.js';
 import { SubagentRegistry } from './claudeSubagentRegistry.js';
@@ -647,6 +649,7 @@ export class ClaudeAgentSession extends Disposable {
 				resumeSessionAt: this._pendingResumeSessionAt,
 				mcpServers,
 				deniedMcpServers,
+				unifiedUserCustomizations: this._usesUnifiedUserCustomizations(),
 				allowedTools,
 				plugins,
 				agent: agentName,
@@ -661,6 +664,7 @@ export class ClaudeAgentSession extends Disposable {
 
 		this._logService.info(`[Claude] session ${this.sessionId}: enableFileCheckpointing=${options.enableFileCheckpointing} isResume=${ctx.isResume}`);
 
+		await this._prepareUnifiedSkills(options);
 		const warm = await this._sdkService.startup({ options });
 
 		if (this.abortController.signal.aborted) {
@@ -762,6 +766,7 @@ export class ClaudeAgentSession extends Disposable {
 						resumeSessionAt: this._pendingResumeSessionAt,
 						mcpServers: rebuildMcp,
 						deniedMcpServers: rebuildDeniedMcpServers,
+						unifiedUserCustomizations: this._usesUnifiedUserCustomizations(),
 						allowedTools: rebuildAllowedTools,
 						plugins: rebuildPlugins,
 						agent: rebuildAgentName,
@@ -774,6 +779,7 @@ export class ClaudeAgentSession extends Disposable {
 					data => this._logService.error(`[Claude SDK stderr] ${data}`),
 				);
 				this._logService.info(`[Claude] session ${this.sessionId}: resume rebuild agent=${rebuildOptions.agent ?? '(none)'}`);
+				await this._prepareUnifiedSkills(rebuildOptions);
 				rebuildWarm = await this._sdkService.startup({ options: rebuildOptions });
 				// Rebuild succeeded with the anchor applied — clear it so it
 				// isn't re-applied. A throw above keeps it staged (handled in the
@@ -909,14 +915,14 @@ export class ClaudeAgentSession extends Disposable {
 				}
 				continue;
 			}
-			if (definition.defaultCwd && isEqual(definition.defaultCwd, primaryCwd)) {
+			if (!this._usesUnifiedUserCustomizations() && definition.defaultCwd && isEqual(definition.defaultCwd, primaryCwd)) {
 				nativeWorkspaceDefinitions.push(definition);
 				continue;
 			}
 			definitions.set(definition.name, definition);
 		}
 		for (const synced of this._desiredClientPlugins()) {
-			if (!synced.pluginDir || !hasClientPluginMcpDefaultCwds(synced.customization)) {
+			if (!synced.pluginDir || (!this._usesUnifiedUserCustomizations() && !hasClientPluginMcpDefaultCwds(synced.customization))) {
 				continue;
 			}
 			try {
@@ -925,7 +931,7 @@ export class ClaudeAgentSession extends Disposable {
 					hasGitHubMcpServer = true;
 				}
 				const candidate = { ...synced.customization, children: parsed.mcpServers.map(definition => definition.customization) };
-				const resolved = resolveCustomizationEnablement(this._customizationEnablementService, this._configurationResource, [candidate], this._clientChildEnablement, this._clientPluginEnablement);
+				const resolved = resolveCustomizationEnablement(this._customizationEnablementService, this._configurationResource, [candidate], this._clientChildEnablement, this._clientPluginEnablement, undefined, this._usesUnifiedUserCustomizations());
 				if (!isCustomizationSdkEligible(resolved, candidate)) {
 					continue;
 				}
@@ -935,7 +941,7 @@ export class ClaudeAgentSession extends Disposable {
 				const internalEnablement = getSdkMcpServerEnablement(internalResolution);
 				for (let index = 0; index < parsed.mcpServers.length; index++) {
 					const definition = parsed.mcpServers[index];
-					if (enabledById.get(definition.customization.id) !== true || internalEnablement.get(internalCandidates[index].id) !== true) {
+					if (enabledById.get(definition.customization.id) !== true || (!this._usesUnifiedUserCustomizations() && internalEnablement.get(internalCandidates[index].id) !== true)) {
 						deniedServers.push(toClaudeDeniedMcpServer(definition));
 						continue;
 					}
@@ -1520,6 +1526,10 @@ export class ClaudeAgentSession extends Disposable {
 		if (this._pipeline) {
 			try {
 				sdk = await this._pipeline.snapshotResolvedCustomizations();
+				if (this._usesUnifiedUserCustomizations()) {
+					const clientNames = new Set((await this._getClientSkillNames()).flatMap(skill => [skill.name, skill.sdkName]));
+					sdk = { ...sdk, commands: sdk.commands.filter(command => command.builtin === true || !clientNames.has(command.name)) };
+				}
 			} catch (err) {
 				this._logService.warn(`[Claude:${this.sessionId}] snapshotResolvedCustomizations failed`, err);
 			}
@@ -1544,11 +1554,22 @@ export class ClaudeAgentSession extends Disposable {
 			const { enablement: _enablement, ...withoutEnablement } = item.customization;
 			return withoutEnablement;
 		});
-		result.push(...discoveredCustomizations);
+		result.push(...discoveredCustomizations.flatMap(customization => {
+			if (!this._usesUnifiedUserCustomizations() || this.workingDirectories?.some(root => isEqualOrParent(URI.parse(customization.uri), root))) {
+				return [customization];
+			}
+			if (customization.type === CustomizationType.Directory && customization.contents === CustomizationType.Skill && URI.parse(customization.uri).scheme === 'file') {
+				return [];
+			}
+			if (customization.type === CustomizationType.Plugin) {
+				return [{ ...customization, children: customization.children?.filter(child => child.type !== CustomizationType.Skill) }];
+			}
+			return [customization];
+		}));
 		// Cache for the MCP-contributor signal enrichment (see
 		// {@link _enrichSignalWithMcpContributor}).
 		const projected = applyMcpServerEnablement(result, state);
-		const enabled = resolveCustomizationEnablement(this._customizationEnablementService, this._configurationResource, projected, this._clientChildEnablement, this._clientPluginEnablement);
+		const enabled = resolveCustomizationEnablement(this._customizationEnablementService, this._configurationResource, projected, this._clientChildEnablement, this._clientPluginEnablement, undefined, this._usesUnifiedUserCustomizations());
 		this._lastCustomizations = enabled.customizations;
 		return enabled.customizations;
 	}
@@ -1586,6 +1607,8 @@ export class ClaudeAgentSession extends Disposable {
 			this._hostCustomizations,
 			this._clientChildEnablement,
 			this._clientPluginEnablement,
+			undefined,
+			this._usesUnifiedUserCustomizations(),
 		);
 		const enabledById = getSdkMcpServerEnablement(resolved);
 		return new Map(resolved.customizations.flatMap(customization => {
@@ -1610,15 +1633,74 @@ export class ClaudeAgentSession extends Disposable {
 		return this._desiredClientPlugins().flatMap(synced => synced.pluginDir ? [synced.pluginDir] : []);
 	}
 
+	private _usesUnifiedUserCustomizations(): boolean {
+		return this._configurationService.getRootValue(agentHostCustomizationConfigSchema, AgentHostConfigKey.UnifiedUserCustomizations) === true;
+	}
+
+	private _unifiedBuiltinSkillNames: readonly string[] | undefined;
+
+	private async _getClientSkillNames(): Promise<readonly { readonly name: string; readonly sdkName: string }[]> {
+		const skills: { name: string; sdkName: string }[] = [];
+		for (const synced of this._desiredClientPlugins()) {
+			if (!synced.pluginDir) {
+				continue;
+			}
+			const parsed = await parsePlugin(synced.pluginDir, this._fileService, this.workingDirectory, this._environmentService.userHome, synced.pluginDir);
+			const format = await detectPluginFormat(synced.pluginDir, this._fileService);
+			const manifest = await readPluginManifest(synced.pluginDir, format, this._fileService);
+			const prefix = format.format === PluginFormat.Claude ? manifest?.name : basename(synced.pluginDir.fsPath);
+			if (typeof prefix === 'string') {
+				skills.push(...parsed.skills.map(skill => ({ name: skill.name, sdkName: `${prefix}:${skill.name}` })));
+			}
+		}
+		return skills;
+	}
+
+	/** Preserve the SDK's actual built-ins while admitting user skills only through the client bundle. */
+	private async _prepareUnifiedSkills(options: Options): Promise<void> {
+		if (!this._usesUnifiedUserCustomizations()) {
+			return;
+		}
+		const discovered = await discoverClaudeMultiRootCustomizations(this.workingDirectories, this._environmentService.userHome, this._fileService, this._logService);
+		if (!this._unifiedBuiltinSkillNames) {
+			// Control-plane initialization needs no model turn. Query the real SDK
+			// command set instead of making the curated UI list a runtime allowlist.
+			const probe = await this._sdkService.query({
+				prompt: (async function* (): AsyncIterable<SDKUserMessage> { })(),
+				options: { ...options, strictMcpConfig: true, mcpServers: {}, plugins: [], hooks: {}, settingSources: [], skills: 'all', persistSession: false, sessionId: undefined, resume: undefined, resumeSessionAt: undefined },
+			});
+			try {
+				const diskNames = new Set(discovered.discovered.filter(item => item.customization.type === CustomizationType.Skill).map(item => item.name));
+				this._unifiedBuiltinSkillNames = (await probe.supportedCommands()).filter(command => command.builtin === true || (!diskNames.has(command.name) && !command.name.includes(':'))).map(command => command.name);
+			} finally {
+				probe.close();
+			}
+		}
+		const workspaceNames = discovered.discovered.filter(item => item.customization.type === CustomizationType.Skill && this.workingDirectories?.some(root => isEqualOrParent(item.uri, root))).map(item => item.name);
+		const pluginNames = (await this._getClientSkillNames()).map(skill => skill.sdkName);
+		options.skills = [...new Set([...this._unifiedBuiltinSkillNames, ...workspaceNames, ...pluginNames])];
+		const nativeUserNames = discovered.discovered.filter(item => item.customization.type === CustomizationType.Skill && !this.workingDirectories?.some(root => isEqualOrParent(item.uri, root)) && !this._unifiedBuiltinSkillNames!.includes(item.name)).map(item => item.name);
+		for (const plugin of discovered.nativePlugins) {
+			if (!this.workingDirectories?.some(root => isEqualOrParent(plugin.root, root))) {
+				const format = await detectPluginFormat(plugin.root, this._fileService);
+				const manifest = await readPluginManifest(plugin.root, format, this._fileService);
+				const prefix = typeof manifest?.name === 'string' ? manifest.name : plugin.id.split('@')[0];
+				nativeUserNames.push(...plugin.parsed.skills.map(skill => `${prefix}:${skill.name}`));
+			}
+		}
+		const settings = typeof options.settings === 'object' ? options.settings : {};
+		options.settings = { ...settings, skillOverrides: { ...settings.skillOverrides, ...Object.fromEntries(nativeUserNames.map(name => [name, 'off' as const])) } };
+	}
+
 	private _desiredClientPluginConfigs(): readonly { readonly uri: URI; readonly skipMcpDiscovery: boolean }[] {
 		return this._desiredClientPlugins().flatMap(synced => synced.pluginDir ? [{
 			uri: synced.pluginDir,
-			skipMcpDiscovery: hasClientPluginMcpDefaultCwds(synced.customization),
+			skipMcpDiscovery: this._usesUnifiedUserCustomizations() || hasClientPluginMcpDefaultCwds(synced.customization),
 		}] : []);
 	}
 
 	private _desiredClientPlugins(): readonly ISyncedCustomization[] {
-		const resolved = resolveCustomizationEnablement(this._customizationEnablementService, this._configurationResource, this.clientCustomizationsDiff.model.state.get().synced.map(item => item.customization), this._clientChildEnablement, this._clientPluginEnablement);
+		const resolved = resolveCustomizationEnablement(this._customizationEnablementService, this._configurationResource, this.clientCustomizationsDiff.model.state.get().synced.map(item => item.customization), this._clientChildEnablement, this._clientPluginEnablement, undefined, this._usesUnifiedUserCustomizations());
 		const desiredById = new Map(resolved.customizations
 			.filter(customization => isCustomizationSdkEligible(resolved, customization))
 			.map(customization => [customization.id, customization.type === CustomizationType.Directory ? customization.enabled : isCustomizationEnabled(customization)]));

@@ -15,6 +15,7 @@ import { autorun, derived, IObservable, observableValue, transaction } from '../
 import { type IExtUri } from '../../../../../../base/common/resources.js';
 import { URI } from '../../../../../../base/common/uri.js';
 import { isRemoteAgentHostSessionType } from '../../../../../../platform/agentHost/common/agentHostSessionType.js';
+import { AgentHostUnifiedUserCustomizationsSettingId } from '../../../../../../platform/agentHost/common/agentService.js';
 import type { AgentCustomization, SessionActiveClient, ToolDefinition } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
 import type { ClientPluginCustomization } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { CLIENT_SEMANTIC_SEARCH_REFERENCE_NAME, CLIENT_SEMANTIC_SEARCH_TOOL_ID, CopilotSemanticSearchEnabledSettingId, SEMANTIC_SEARCH_TOOL_NAME } from '../../../../../../platform/agentHost/common/semanticSearchConstants.js';
@@ -288,12 +289,12 @@ export class AgentHostActiveClientService extends Disposable implements IAgentHo
 		@IAgentHostToolSetEnablementService private readonly _toolSetEnablementService: IAgentHostToolSetEnablementService,
 		@IUriIdentityService private readonly _uriIdentityService: IUriIdentityService,
 		@IWorkbenchEnvironmentService private readonly _environmentService: IWorkbenchEnvironmentService,
-		@IConfigurationService configurationService: IConfigurationService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super();
 		this._allToolsObs = this._toolsService.observeTools(undefined);
 		this._allToolSetsObs = this._toolsService.toolSets;
-		this._semanticSearchEnabled = observableConfigValue(CopilotSemanticSearchEnabledSettingId, false, configurationService);
+		this._semanticSearchEnabled = observableConfigValue(CopilotSemanticSearchEnabledSettingId, false, this._configurationService);
 	}
 
 	acquireScope(sessionType: string, roots: readonly URI[]): IAgentCustomizationScope {
@@ -303,7 +304,10 @@ export class AgentHostActiveClientService extends Disposable implements IAgentHo
 		let scope = this._scopes.get(serviceScopeKey);
 		if (!scope) {
 			// A host that does not share the client's filesystem needs user storage shipped over the wire.
-			const options = isRemoteAgentHostSessionType(sessionType) ? { includeUserStorage: true } : undefined;
+			const options: ILocalCustomizationSyncOptions = {
+				includeUserStorage: isRemoteAgentHostSessionType(sessionType),
+				unifiedUserCustomizations: this._configurationService.getValue<boolean>(AgentHostUnifiedUserCustomizationsSettingId) === true,
+			};
 			const createdScope: AgentCustomizationScope = this._instantiationService.createInstance(
 				AgentCustomizationScope,
 				sessionType,

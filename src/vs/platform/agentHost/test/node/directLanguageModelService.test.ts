@@ -9,6 +9,7 @@ import { Emitter } from '../../../../base/common/event.js';
 import { mock } from '../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { getByokDirectModelSelectionId, IByokLmBridgeConnection, IByokLmDirectConnection, IByokLmModelInfo } from '../../common/agentHostByokLm.js';
+import type { ConfigPropertySchema } from '../../common/state/protocol/state.js';
 import { IAgentConfigurationService } from '../../node/agentConfigurationService.js';
 import { ByokLmBridgeRegistry } from '../../node/byokLmBridgeRegistry.js';
 import { DirectLanguageModelService, validateDirectLanguageModelConnection } from '../../node/directLanguageModelService.js';
@@ -50,6 +51,89 @@ suite('DirectLanguageModelService', () => {
 		delete connection.resolveDirectConnection;
 		assert.deepStrictEqual(service.getModels('messages', 'claude'), []);
 		await assert.rejects(service.resolve(getByokDirectModelSelectionId(model), 'messages'), /no longer available/);
+	});
+
+	test('publishes advertised Responses efforts and their default as thinking levels', () => {
+		const { service } = setup([{ ...model, supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultReasoningEffort: 'high' }]);
+		const thinkingLevel = service.getModels('responses', 'codex')[0].configSchema?.properties.thinkingLevel;
+		assert.deepStrictEqual({
+			type: thinkingLevel?.type,
+			enum: thinkingLevel?.enum,
+			default: thinkingLevel?.default,
+			labels: thinkingLevel?.enumLabels,
+			messagesDefault: service.getModels('messages', 'claude')[0].configSchema?.properties.thinkingLevel.default,
+		}, {
+			type: 'string',
+			enum: ['low', 'medium', 'high', 'xhigh', 'max'],
+			default: 'high',
+			labels: ['Low', 'Medium', 'High', 'Extra High', 'Max'],
+			messagesDefault: 'high',
+		});
+	});
+
+	test('Messages efforts honor the provider default and otherwise prefer Claude high', () => {
+		const { service } = setup([
+			{ ...model, supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'unsupported'], defaultReasoningEffort: 'medium' },
+			{ ...model, supportedReasoningEfforts: ['low', 'medium', 'high'] },
+			{ ...model, supportedReasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'ultra' },
+			{ ...model, supportedReasoningEfforts: ['low'] },
+			{ ...model, supportedReasoningEfforts: ['none', 'minimal', 'ultra'] },
+		]);
+		assert.deepStrictEqual(service.getModels('messages', 'claude').map(model => ({
+			enum: model.configSchema?.properties.thinkingLevel.enum,
+			default: model.configSchema?.properties.thinkingLevel.default,
+		})), [
+			{ enum: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'medium' },
+			{ enum: ['low', 'medium', 'high'], default: 'high' },
+			{ enum: ['low', 'medium', 'high'], default: 'high' },
+			{ enum: ['low'], default: 'low' },
+			{ enum: undefined, default: undefined },
+		]);
+	});
+
+	test('offers only recognized efforts and resolves a supported default', () => {
+		const { service } = setup([
+			{ ...model, supportedReasoningEfforts: ['unsupported', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultReasoningEffort: 'unsupported' },
+			{ ...model, id: 'limited', supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'medium' },
+		]);
+		assert.deepStrictEqual(service.getModels('responses', 'codex').map(model => ({
+			enum: model.configSchema?.properties.thinkingLevel.enum,
+			default: model.configSchema?.properties.thinkingLevel.default,
+		})), [
+			{ enum: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'], default: 'medium' },
+			{ enum: ['low', 'high'], default: 'low' },
+		]);
+	});
+
+	test('omits the effort picker when no recognized efforts are advertised', () => {
+		const { service } = setup([
+			model,
+			{ ...model, supportedReasoningEfforts: [], defaultReasoningEffort: 'high' },
+			{ ...model, supportedReasoningEfforts: ['unsupported'] },
+		]);
+		assert.deepStrictEqual(service.getModels('responses', 'codex').map(model => model.configSchema), [undefined, undefined, undefined]);
+		assert.deepStrictEqual(service.getModels('messages', 'claude').map(model => model.configSchema), [undefined, undefined, undefined]);
+	});
+
+	test('republishes effort and default changes without changing model identity', () => {
+		const { service, push } = setup([{ ...model, supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'low' }]);
+		const initialId = service.getModels('responses', 'codex')[0].id;
+		const snapshots: Pick<ConfigPropertySchema, 'enum' | 'default'>[] = [];
+		store.add(service.onDidChangeModels(() => {
+			const thinkingLevel = service.getModels('responses', 'codex')[0]?.configSchema?.properties.thinkingLevel;
+			snapshots.push({ enum: thinkingLevel?.enum, default: thinkingLevel?.default });
+		}));
+		push([{ ...model, supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high' }]);
+		push([{ ...model, supportedReasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'high' }]);
+		push([model]);
+		assert.deepStrictEqual({ id: service.getModels('responses', 'codex')[0].id, snapshots }, {
+			id: initialId,
+			snapshots: [
+				{ enum: ['low', 'high'], default: 'high' },
+				{ enum: ['low', 'medium', 'high'], default: 'high' },
+				{ enum: undefined, default: undefined },
+			],
+		});
 	});
 
 	test('identical model ids in different configuration groups remain distinct', () => {

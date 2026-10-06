@@ -12,7 +12,7 @@ import { customizationId, type ClientPluginCustomization } from '../../../../../
 import { withCustomizationEnablement } from '../../../../../../platform/agentHost/common/customizationEnablement.js';
 import { AICustomizationSource, AICustomizationSources } from '../../../common/aiCustomizationWorkspaceService.js';
 import { PromptsType } from '../../../common/promptSyntax/promptTypes.js';
-import { IPromptsService, isUserToggleableCustomization, matchesSessionType, PromptsStorage } from '../../../common/promptSyntax/service/promptsService.js';
+import { IPromptsService, type IPromptPath, type IPromptFileDiscoveryResult, isUserToggleableCustomization, matchesSessionType, PromptsStorage } from '../../../common/promptSyntax/service/promptsService.js';
 import { type ICustomizationSyncProvider } from '../../../common/customizationHarnessService.js';
 import { IAgentPlugin, IAgentPluginService } from '../../../common/plugins/agentPluginService.js';
 import { IMcpService } from '../../../../mcp/common/mcpTypes.js';
@@ -52,6 +52,13 @@ export const SYNCABLE_STORAGE_SOURCES: readonly PromptsStorage[] = [
 
 export interface ILocalCustomizationSyncOptions {
 	readonly includeUserStorage?: boolean;
+	readonly unifiedUserCustomizations?: boolean;
+}
+
+/** The same deduplicated user skill catalog used by VS Code's local agent. */
+export async function getUnifiedUserSkills(promptsService: IPromptsService, token: CancellationToken): Promise<readonly (IPromptPath & Pick<IPromptFileDiscoveryResult, 'userInvocable' | 'disableModelInvocation'>)[]> {
+	const discovery = await promptsService.getDiscoveryInfo(PromptsType.skill, token);
+	return discovery.files.flatMap(file => file.status === 'loaded' && file.promptPath.storage === PromptsStorage.user ? [{ ...file.promptPath, userInvocable: file.userInvocable, disableModelInvocation: file.disableModelInvocation }] : []);
 }
 
 export interface ILocalCustomizationFile {
@@ -86,13 +93,16 @@ export async function enumerateLocalCustomizationsForHarness(
 ): Promise<readonly ILocalCustomizationFile[]> {
 	const result: ILocalCustomizationFile[] = [];
 	const seenUris = new ResourceSet();
-	const storageSources = options?.includeUserStorage
-		? [PromptsStorage.user, ...SYNCABLE_STORAGE_SOURCES]
-		: SYNCABLE_STORAGE_SOURCES;
 	for (const type of SYNCABLE_PROMPT_TYPES) {
+		const unifiedUserSkills = type === PromptsType.skill && options?.unifiedUserCustomizations;
+		const storageSources = options?.includeUserStorage || unifiedUserSkills
+			? [PromptsStorage.user, ...SYNCABLE_STORAGE_SOURCES]
+			: SYNCABLE_STORAGE_SOURCES;
 		const userDisabled = promptsService.getDisabledPromptFiles(type);
 		const lists = await Promise.all(
-			storageSources.map(storage => promptsService.listPromptFilesForStorage(type, storage, token)),
+			storageSources.map(storage => unifiedUserSkills && storage === PromptsStorage.user
+				? getUnifiedUserSkills(promptsService, token)
+				: promptsService.listPromptFilesForStorage(type, storage, token)),
 		);
 		for (let i = 0; i < lists.length; i++) {
 			const source = storageSources[i];
@@ -106,7 +116,7 @@ export async function enumerateLocalCustomizationsForHarness(
 						source,
 						pluginUri: file.pluginUri,
 						extensionId: file.extension?.identifier.value,
-						disabled: syncProvider.isDisabled(file.uri) || (userToggleable && userDisabled.has(file.uri)),
+						disabled: (unifiedUserSkills && source === PromptsStorage.user ? false : syncProvider.isDisabled(file.uri)) || (userToggleable && userDisabled.has(file.uri)),
 					});
 				}
 			}
@@ -182,10 +192,10 @@ export async function resolveLocalCustomAgents(
 
 /**
  * Collects declaratively forwardable MCP servers, excluding plugin-sourced servers, duplicate built-ins, and workspace-discovered servers other than resolvable `.vscode/mcp.json` entries.
- * Copilot-home `mcp-config.json` (`COPILOT_HOME`, otherwise `~/.copilot`) is runtime-discovered only by the window's own Copilot host on the same machine.
+ * In unified mode, external application configuration remains private to its native harness.
  */
-export async function collectNonPluginMcpServers(mcpService: IMcpService, configurationResolverService: IConfigurationResolverService, sessionType: string, workingDirectories: readonly URI[], windowRemoteAuthority: string | null): Promise<ISyncableMcpServer[]> {
-	const resolved = await resolveMcpServersForAgentHostDelivery(mcpService.servers.get(), configurationResolverService, sessionType, workingDirectories, windowRemoteAuthority);
+export async function collectNonPluginMcpServers(mcpService: IMcpService, configurationResolverService: IConfigurationResolverService, sessionType: string, workingDirectories: readonly URI[], windowRemoteAuthority: string | null, unifiedUserCustomizations = false): Promise<ISyncableMcpServer[]> {
+	const resolved = await resolveMcpServersForAgentHostDelivery(mcpService.servers.get(), configurationResolverService, sessionType, workingDirectories, windowRemoteAuthority, unifiedUserCustomizations);
 	return resolved.flatMap(({ server, definition, delivery, projectedConfiguration }) => {
 		if (delivery !== AgentHostMcpServerDelivery.ClientForwarded || !definition || !projectedConfiguration) {
 			return [];
@@ -293,7 +303,7 @@ export async function resolveCustomizationRefs(
 	}
 
 	const refs: Promise<ClientPluginCustomization | undefined>[] = [...pluginRefs.values()];
-	const mcpServers = await collectNonPluginMcpServers(mcpService, configurationResolverService, sessionType, workingDirectories, windowRemoteAuthority);
+	const mcpServers = await collectNonPluginMcpServers(mcpService, configurationResolverService, sessionType, workingDirectories, windowRemoteAuthority, options?.unifiedUserCustomizations);
 	if (looseFiles.length > 0 || mcpServers.length > 0) {
 		refs.push(bundler.bundle(looseFiles, mcpServers).then(r => r?.ref));
 	}

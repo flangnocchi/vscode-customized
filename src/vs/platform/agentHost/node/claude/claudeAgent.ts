@@ -1012,7 +1012,7 @@ export class ClaudeAgent extends Disposable implements IAgent {
 		const neverYieldingPrompt: AsyncIterable<SDKUserMessage> = {
 			[Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<SDKUserMessage>>(() => { /* never resolves */ }) }),
 		};
-		const options = buildModelEnumerationOptions();
+		const options = buildModelEnumerationOptions(this._configurationService.getRootValue(agentHostCustomizationConfigSchema, AgentHostConfigKey.UnifiedUserCustomizations) === true);
 		const query = await this._sdkService.query({ prompt: neverYieldingPrompt, options });
 		try {
 			const [account, models] = await Promise.all([query.accountInfo(), query.supportedModels()]);

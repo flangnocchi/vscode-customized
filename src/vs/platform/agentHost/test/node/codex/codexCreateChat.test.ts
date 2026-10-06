@@ -55,6 +55,7 @@ import { CodexAppServerClient, type ICodexAppServerTransport } from '../../../no
 import { ICodexProxyService } from '../../../node/codex/codexProxyService.js';
 import type { HookMetadata } from '../../../node/codex/protocol/generated/v2/HookMetadata.js';
 import type { JsonValue } from '../../../node/codex/protocol/generated/serde_json/JsonValue.js';
+import type { TurnStartParams } from '../../../node/codex/protocol/generated/v2/TurnStartParams.js';
 import { ICopilotApiService } from '../../../node/shared/copilotApiService.js';
 import { createSessionDataService, TestSessionDatabase } from '../../common/sessionTestHelpers.js';
 import { createTestGitHubEndpointService } from '../testGitHubEndpointService.js';
@@ -72,6 +73,8 @@ interface ITestWireRequest {
 		readonly threadId?: string;
 		readonly model?: string;
 		readonly modelProvider?: string;
+		readonly effort?: TurnStartParams['effort'];
+		readonly collaborationMode?: TurnStartParams['collaborationMode'];
 		readonly config?: Readonly<Record<string, JsonValue>>;
 		readonly includeTurns?: boolean;
 		readonly numTurns?: number;
@@ -452,8 +455,8 @@ suite('CodexAgent createChat', () => {
 		});
 	});
 
-	test('direct model prewarm starts its own provider with fresh Responses headers', async () => {
-		const selection = { id: '@provider=vscode-byok-test:cx%2Fmodel' };
+	test('direct model prewarm starts its own provider and sends the selected thinking level', async () => {
+		const selection = { id: '@provider=vscode-byok-test:cx%2Fmodel', config: { thinkingLevel: 'high' } };
 		const directModels = createTestDirectLanguageModelService({
 			getModels: () => [{ ...selection, name: 'Gateway', provider: 'codex', supportsVision: false }],
 			resolve: async () => ({ baseUrl: 'http://gateway.test/v1', modelId: 'cx/model', headers: { Authorization: 'Bearer test-key' } }),
@@ -472,6 +475,16 @@ suite('CodexAgent createChat', () => {
 		assert.deepStrictEqual({ method: start.method, model: start.params.model, modelProvider: start.params.modelProvider, provider: start.params.config?.model_providers }, {
 			method: 'thread/start', model: 'cx/model', modelProvider: 'vscode-byok-test',
 			provider: { 'vscode-byok-test': { name: 'VS Code BYOK', base_url: 'http://gateway.test/v1', wire_api: 'responses', requires_openai_auth: false, supports_websockets: false, http_headers: { Authorization: 'Bearer test-key' } } },
+		});
+		const sending = agent.chats.sendMessage(chat, 'hello', [URI.file('/workspace/direct')], undefined, 'turn-1', undefined, {
+			configurationResource: session,
+			resource: chat,
+		});
+		const turn = await readNextRequest(peer.outbound);
+		peer.push({ id: turn.id, result: {} });
+		await sending;
+		assert.deepStrictEqual({ method: turn.method, effort: turn.params.effort, collaborationEffort: turn.params.collaborationMode?.settings.reasoning_effort }, {
+			method: 'turn/start', effort: 'high', collaborationEffort: 'high',
 		});
 	});
 

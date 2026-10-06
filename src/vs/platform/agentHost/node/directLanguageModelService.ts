@@ -10,6 +10,9 @@ import { BYOK_DIRECT_PROVIDER_PREFIX, ByokLmDirectProtocol, getByokDirectModelSe
 import { AgentHostByokModelsEnabledConfigKey, platformRootSchema } from '../common/agentHostSchema.js';
 import { createAgentModelByokMeta } from '../common/agentModelByokMeta.js';
 import { createAgentModelGroupMeta } from '../common/agentModelSource.js';
+import { createThinkingLevelConfigSchemaProperty } from '../common/agentModelConfiguration.js';
+import { isClaudeEffortLevel } from '../common/claudeModelConfig.js';
+import { isReasoningEffortLevel } from '../common/reasoningEffort.js';
 import { IAgentConfigurationService } from './agentConfigurationService.js';
 import { IByokLmBridgeRegistry } from './byokLmBridgeRegistry.js';
 
@@ -59,16 +62,26 @@ export class DirectLanguageModelService implements IDirectLanguageModelService {
 	getModels(protocol: ByokLmDirectProtocol, provider: AgentProvider): readonly IAgentModelInfo[] {
 		return this._enabled() && this._registry.getServingConnection()?.resolveDirectConnection ? this._registry.getModels()
 			.filter(model => model.modelIdentifier && model.directConnectionProtocols?.includes(protocol) && model.supportsToolCalling)
-			.map(model => ({
-				provider,
-				id: getByokDirectModelSelectionId(model),
-				name: model.name ?? model.id,
-				maxContextWindow: model.maxContextWindowTokens,
-				maxPromptTokens: model.maxPromptTokens,
-				maxOutputTokens: model.maxOutputTokens,
-				supportsVision: model.supportsVision ?? false,
-				_meta: { ...createAgentModelGroupMeta(model.vendor), ...createAgentModelByokMeta(model.modelIdentifier) },
-			})) : [];
+			.map((model): IAgentModelInfo => {
+				const supportedEfforts = model.supportedReasoningEfforts?.filter(protocol === 'messages' ? isClaudeEffortLevel : isReasoningEffortLevel);
+				const declaredDefault = supportedEfforts?.some(effort => effort === model.defaultReasoningEffort) ? model.defaultReasoningEffort : protocol === 'messages' ? 'high' : undefined;
+				const thinkingLevel = createThinkingLevelConfigSchemaProperty(
+					supportedEfforts?.map(reasoningEffort => ({ reasoningEffort })),
+					declaredDefault,
+					model.id,
+				);
+				return {
+					provider,
+					id: getByokDirectModelSelectionId(model),
+					name: model.name ?? model.id,
+					maxContextWindow: model.maxContextWindowTokens,
+					maxPromptTokens: model.maxPromptTokens,
+					maxOutputTokens: model.maxOutputTokens,
+					supportsVision: model.supportsVision ?? false,
+					...(thinkingLevel ? { configSchema: { type: 'object', properties: { thinkingLevel } } } : {}),
+					_meta: { ...createAgentModelGroupMeta(model.vendor), ...createAgentModelByokMeta(model.modelIdentifier) },
+				};
+			}) : [];
 	}
 
 	async resolve(selectionId: string, protocol: ByokLmDirectProtocol): Promise<IByokLmDirectConnection> {

@@ -22,6 +22,7 @@ import { Button } from '../../../../../base/browser/ui/button/button.js';
 import { defaultButtonStyles, defaultInputBoxStyles, getButtonStyles } from '../../../../../platform/theme/browser/defaultStyles.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { AgentHostUnifiedUserCustomizationsSettingId } from '../../../../../platform/agentHost/common/agentService.js';
 import { CustomizationMarketplaceConfiguration } from '../../../../../platform/customizationMarketplace/common/customizationMarketplaceSources.js';
 import { IQueryOptions, mcpAccessConfig, McpAccessValue } from '../../../../../platform/mcp/common/mcpManagement.js';
 import { IMcpGalleryManifestService } from '../../../../../platform/mcp/common/mcpGalleryManifest.js';
@@ -1300,7 +1301,12 @@ export function setPrimaryMcpServerEnablement(
 	localServerId: string | undefined,
 	activeSessionServer: AgentHostMcpServer | undefined,
 	enabled: boolean,
+	unifiedUserCustomizations = false,
 ): void {
+	if (unifiedUserCustomizations && localServerId && activeSessionServer?.isClientBundled) {
+		mcpService.enablementModel.setEnabled(localServerId, enabled ? ContributionEnablementState.EnabledProfile : ContributionEnablementState.DisabledProfile);
+		return;
+	}
 	if (activeSessionServer && isHostOwnedPluginMcpServer(activeSessionServer)) {
 		agentHostCustomizations.setCustomizationEnablement(
 			sessionResource,
@@ -1406,7 +1412,10 @@ export function getLocalMcpServerEnablementActions(mcpService: IMcpService, serv
 }
 
 /** Creates enablement actions for a built-in row, using the active agent-host session for scoped actions. */
-export function getBuiltinMcpServerEnablementActions(mcpService: IMcpService, serverId: string, isEmptyWorkbench: boolean, agentHostCustomizations: IAgentHostCustomizationService, agentPluginService: IAgentPluginService, sessionResource: URI, activeSessionServer: AgentHostMcpServer | undefined): IAction[] {
+export function getBuiltinMcpServerEnablementActions(mcpService: IMcpService, serverId: string, isEmptyWorkbench: boolean, agentHostCustomizations: IAgentHostCustomizationService, agentPluginService: IAgentPluginService, sessionResource: URI, activeSessionServer: AgentHostMcpServer | undefined, unifiedUserCustomizations = false): IAction[] {
+	if (unifiedUserCustomizations && (activeSessionServer === undefined || activeSessionServer.isClientBundled)) {
+		return getLocalMcpServerEnablementActions(mcpService, serverId, isEmptyWorkbench, { includeWorkspace: false, activeSessionServer });
+	}
 	if (activeSessionServer === undefined) {
 		return getLocalMcpServerEnablementActions(mcpService, serverId, isEmptyWorkbench);
 	}
@@ -2840,6 +2849,7 @@ export class McpListWidget extends Disposable {
 			serverId,
 			activeSessionServer,
 			enabled,
+			this.configurationService.getValue<boolean>(AgentHostUnifiedUserCustomizationsSettingId) === true,
 		);
 	}
 
@@ -3153,6 +3163,7 @@ export class McpListWidget extends Disposable {
 					this.agentPluginService,
 					this.customizationHarnessService.activeSessionResource.get(),
 					entry.activeSessionServer,
+					this.configurationService.getValue<boolean>(AgentHostUnifiedUserCustomizationsSettingId) === true,
 				);
 				if (enablementActions.length > 0) {
 					if (actions.length > 0) {
@@ -3206,7 +3217,7 @@ export class McpListWidget extends Disposable {
 		const groups: IAction[][] = getContextMenuActions(mcpServer, false, this.instantiationService);
 		const activeSessionServer = entry.activeSessionServer;
 		const activeSessionLifecycleAction = activeSessionServer !== undefined ? getActiveSessionServerLifecycleAction(activeSessionServer) : undefined;
-		const agentHostEnablementActions = activeSessionServer !== undefined
+		const agentHostEnablementActions = activeSessionServer !== undefined && !(activeSessionServer.isClientBundled && this.configurationService.getValue<boolean>(AgentHostUnifiedUserCustomizationsSettingId) === true)
 			? getAgentHostMcpServerEnablementActions(this.agentHostCustomizationService, this.agentPluginService, this.customizationHarnessService.activeSessionResource.get(), activeSessionServer, ['workspace', 'session'])
 			: [];
 		for (const menuActions of groups) {
@@ -3221,6 +3232,8 @@ export class McpListWidget extends Disposable {
 				disposables.add(action);
 			}
 		}
-		return getServerItemContextMenuActions(groups, activeSessionServer, activeSessionLifecycleAction, agentHostEnablementActions);
+		const sharedUserConfiguration = this.configurationService.getValue<boolean>(AgentHostUnifiedUserCustomizationsSettingId) === true && (activeSessionServer === undefined || activeSessionServer.isClientBundled);
+		const enablementGroups = sharedUserConfiguration ? groups.map(actions => actions.filter(action => action.id !== EnableMcpServerForWorkspaceAction.ID && action.id !== DisableMcpServerForWorkspaceAction.ID)) : groups;
+		return getServerItemContextMenuActions(enablementGroups, activeSessionServer, activeSessionLifecycleAction, agentHostEnablementActions);
 	}
 }

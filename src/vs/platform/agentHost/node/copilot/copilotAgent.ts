@@ -6863,7 +6863,7 @@ class SessionPluginController extends Disposable {
 	}
 
 	public resolveTopLevelMcpCustomizations(customizations: readonly Customization[], mcpServerOwners?: ReadonlyMap<string, string>): readonly Customization[] {
-		return resolveCustomizationEnablement(this._customizationEnablementService, this._session, customizations, this._clientChildEnablement(), undefined, mcpServerOwners).customizations;
+		return resolveCustomizationEnablement(this._customizationEnablementService, this._session, customizations, this._clientChildEnablement(), undefined, mcpServerOwners, this._usesUnifiedUserCustomizations()).customizations;
 	}
 
 	private _resolveCustomizationEnablement() {
@@ -6883,12 +6883,15 @@ class SessionPluginController extends Disposable {
 			if (customization.type === CustomizationType.Plugin && explicitPluginIds.has(customization.id)) {
 				continue;
 			}
-			result.push(this._projectForPublish(customization));
+			const unified = this._unifiedNativeCustomization(customization);
+			if (unified) {
+				result.push(this._projectForPublish(unified));
+			}
 		}
 		for (const definition of this._mcpDiscoveryEntry()?.definitions ?? []) {
 			result.push(this._projectForPublish(definition.customization));
 		}
-		return resolveCustomizationEnablement(this._customizationEnablementService, this._session, result, this._clientChildEnablement(), this._clientPlugins());
+		return resolveCustomizationEnablement(this._customizationEnablementService, this._session, result, this._clientChildEnablement(), this._clientPlugins(), undefined, this._usesUnifiedUserCustomizations());
 	}
 
 	/**
@@ -6966,7 +6969,7 @@ class SessionPluginController extends Disposable {
 			return children?.length ? children : undefined;
 		};
 		const discovered = entry?.currentCustomizations() ?? [];
-		const discoveredDirectories = discovered.filter((customization): customization is DirectoryCustomization => customization.type === CustomizationType.Directory);
+		const discoveredDirectories = discovered.flatMap(customization => this._unifiedNativeCustomization(customization) ?? []).filter((customization): customization is DirectoryCustomization => customization.type === CustomizationType.Directory);
 		const sessionPlugin = discoveredDirectories.some(isEnabledForSdk) ? mapToParsedPlugin(discoveredDirectories) : undefined;
 		const withSdkRegistration = (plugin: IParsedPlugin, pluginDir: URI | undefined): ICopilotPluginInfo => ({
 			...plugin,
@@ -7003,6 +7006,39 @@ class SessionPluginController extends Disposable {
 				.map(item => ({ ...withClientDefaults(item), sourceUri: URI.parse(item.customization.uri), ...(disabledChildren(item.customization) ? { disabledMcpServers: disabledChildren(item.customization) } : {}) })),
 			...sessionPlugins,
 		];
+	}
+
+	private _usesUnifiedUserCustomizations(): boolean {
+		return this._parent.configurationService.getRootValue(agentHostCustomizationConfigSchema, AgentHostConfigKey.UnifiedUserCustomizations) === true;
+	}
+
+	private _unifiedNativeCustomization(customization: Customization): Customization | undefined {
+		if (!this._usesUnifiedUserCustomizations() || [this._directory, ...this._additionalDirectories].some(root => root && isEqualOrParent(URI.parse(customization.uri), root))) {
+			return customization;
+		}
+		if (customization.type === CustomizationType.Directory && customization.contents === CustomizationType.Skill) {
+			return undefined;
+		}
+		if (customization.type === CustomizationType.Plugin) {
+			return { ...customization, children: customization.children?.filter(child => child.type !== CustomizationType.Skill) };
+		}
+		return customization;
+	}
+
+	/** Disable independently discovered personal skills that are absent from the VS Code catalog. */
+	public async getUnifiedUserSkillExclusions(plugins: readonly ICopilotPluginInfo[]): Promise<Pick<IActiveClientSnapshot, 'disabledUserSkills'>> {
+		if (!this._usesUnifiedUserCustomizations()) {
+			return {};
+		}
+		const client = await this._parent.getClient();
+		const nativeSkills = await client.rpc.skills.discover({ projectPaths: [] });
+		const allowedSkills = new Set([
+			...plugins.flatMap(plugin => plugin.skills.map(skill => skill.name)),
+			...nativeSkills.skills.filter(skill => skill.source === 'builtin').map(skill => skill.name),
+		]);
+		return {
+			disabledUserSkills: [...new Set(nativeSkills.skills.filter(skill => skill.source !== 'builtin' && !allowedSkills.has(skill.name)).map(skill => skill.name))].sort(),
+		};
 	}
 
 	/**
@@ -7285,6 +7321,8 @@ class SessionPluginController extends Disposable {
 			[this._projectForPublish(customization)],
 			this._clientChildEnablement(),
 			this._clientPlugins(),
+			undefined,
+			this._usesUnifiedUserCustomizations(),
 		).customizations[0] as T;
 	}
 
@@ -7531,10 +7569,13 @@ class ActiveClient extends Disposable {
 
 	/** Builds the client/plugin/MCP snapshot a chat should advertise to its SDK session. */
 	async snapshot(chatKey?: string): Promise<IActiveClientSnapshot> {
+		const plugins = await this.pluginController.getAppliedPlugins();
+		const mcpServers = await this._getMcpServers();
 		return {
 			tools: chatKey === undefined ? this.toolSet.merged() : this.toolsForChat(chatKey),
-			plugins: await this.pluginController.getAppliedPlugins(),
-			mcpServers: await this._getMcpServers(),
+			plugins,
+			mcpServers,
+			...await this.pluginController.getUnifiedUserSkillExclusions(plugins),
 		};
 	}
 
@@ -7551,6 +7592,9 @@ class ActiveClient extends Disposable {
 		}
 		if (!equals(snap.mcpServers, current.mcpServers)) {
 			return 'rootMcpServersChanged';
+		}
+		if (!equals(snap.disabledUserSkills, current.disabledUserSkills)) {
+			return 'userCustomizationsChanged';
 		}
 		return !structuralToolsEqual(current.tools, snap.tools) ? 'clientToolsChanged' : undefined;
 	}

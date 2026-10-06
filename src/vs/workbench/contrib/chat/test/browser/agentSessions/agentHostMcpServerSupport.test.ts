@@ -283,6 +283,19 @@ suite('agentHostMcpServerSupport', () => {
 		}
 	}
 
+	test('unified mode keeps external application MCP private while forwarding VS Code configuration', async () => {
+		const server = makeMcpServer({
+			id: 'copilot.local.shared', collectionId: 'copilot.local',
+			provenance: McpCollectionProvenance.ExternalConfiguration, discoverySource: ExternalDiscoverySource.Copilot,
+			remoteAuthority: null, collectionOrigin: URI.file('/custom/copilot/mcp-config.json'),
+		});
+		const results = await Promise.all(['agent-host-copilotcli', 'agent-host-claude', 'agent-host-codex'].map(sessionType => resolveMcpServersForAgentHostDelivery([server], makeConfigurationResolverService(), sessionType, [], null, true)));
+		assert.deepStrictEqual(results.map(result => result[0].delivery), [AgentHostMcpServerDelivery.RuntimeDiscovered, AgentHostMcpServerDelivery.NotDelivered, AgentHostMcpServerDelivery.NotDelivered]);
+		const vscodeServer = makeMcpServer({ id: 'mcp.config.user.shared', collectionId: 'mcp.config.user', provenance: McpCollectionProvenance.UserProfile, remoteAuthority: null });
+		const shared = await Promise.all(['agent-host-copilotcli', 'agent-host-claude', 'agent-host-codex'].map(sessionType => resolveMcpServersForAgentHostDelivery([vscodeServer], makeConfigurationResolverService(), sessionType, [], null, true)));
+		assert.deepStrictEqual(shared.map(result => result[0].delivery), [0, 1, 2].map(() => AgentHostMcpServerDelivery.ClientForwarded));
+	});
+
 	test('reports unsupported configuration without changing existing direct forwarding', async () => {
 		const root = URI.file('/workspace');
 		const servers = [

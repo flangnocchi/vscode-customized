@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { buildClaudeTelemetryEnv, buildOptions, buildSubprocessEnv, toClaudeMcpServers } from '../../node/claude/claudeSdkOptions.js';
+import { buildClaudeTelemetryEnv, buildModelEnumerationOptions, buildOptions, buildSubprocessEnv, toClaudeMcpServers } from '../../node/claude/claudeSdkOptions.js';
 import type { ClaudeTransport, IClaudeProxyHandle } from '../../node/claude/claudeProxyService.js';
 import { McpServerType } from '../../../mcp/common/mcpPlatformTypes.js';
 import { CustomizationType, McpServerStatus, type McpServerCustomization } from '../../common/state/protocol/state.js';
@@ -15,6 +15,11 @@ import type { IMcpServerDefinition } from '../../../agentPlugins/common/pluginPa
 suite('claudeSdkOptions / buildSubprocessEnv', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('managed model enumeration does not start native MCP or load user skills', () => {
+		const options = buildModelEnumerationOptions(true);
+		assert.deepStrictEqual({ strictMcpConfig: options.strictMcpConfig, mcpServers: options.mcpServers, skills: options.skills }, { strictMcpConfig: true, mcpServers: {}, skills: [] });
+	});
 
 	const SAVED_ENV = { ...process.env };
 	const KNOWN_KEYS = [
@@ -258,6 +263,12 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 		};
 	}
 
+	test('unified customizations retain native MCP, user instructions and hooks', async () => {
+		const managed = await buildOptions({ ...input(undefined), unifiedUserCustomizations: true }, proxyTransport, () => { });
+		const legacy = await buildOptions(input(undefined), proxyTransport, () => { });
+		assert.deepStrictEqual({ strict: managed.strictMcpConfig, sources: managed.settingSources, legacy: legacy.strictMcpConfig }, { strict: false, sources: ['user', 'project', 'local'], legacy: undefined });
+	});
+
 	test('direct gateway options preserve exact model ids, override ambient auth, and re-resolve on resume', async () => {
 		let resolves = 0;
 		const transport: ClaudeTransport = {
@@ -267,8 +278,8 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 				return { baseUrl: 'http://127.0.0.1:20128', modelId: 'cx/gpt-6.1-sol', headers: { authorization: `Bearer test-${resolves}`, 'X-Route': 'test' } };
 			},
 		};
-		const options = await buildOptions({ ...input(undefined), model: { id: transport.selectionId } }, transport, () => { });
-		const resumed = await buildOptions({ ...input(undefined), model: { id: transport.selectionId }, isResume: true }, transport, () => { });
+		const options = await buildOptions({ ...input(undefined), model: { id: transport.selectionId, config: { thinkingLevel: 'high' } } }, transport, () => { });
+		const resumed = await buildOptions({ ...input(undefined), model: { id: transport.selectionId, config: { thinkingLevel: 'max' } }, isResume: true }, transport, () => { });
 		const settings = typeof options.settings === 'string' ? undefined : options.settings;
 		const resumedSettings = typeof resumed.settings === 'string' ? undefined : resumed.settings;
 		assert.deepStrictEqual({
@@ -276,11 +287,11 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 			auth: settings?.env?.ANTHROPIC_AUTH_TOKEN, apiKey: settings?.env?.ANTHROPIC_API_KEY,
 			oauth: settings?.env?.CLAUDE_CODE_OAUTH_TOKEN, headers: settings?.env?.ANTHROPIC_CUSTOM_HEADERS,
 			subagent: settings?.env?.CLAUDE_CODE_SUBAGENT_MODEL, resumedAuth: resumedSettings?.env?.ANTHROPIC_AUTH_TOKEN,
-			resume: resumed.resume, resolves,
+			resume: resumed.resume, resolves, effort: options.effort, resumedEffort: resumed.effort,
 		}, {
 			model: 'cx/gpt-6.1-sol', baseUrl: 'http://127.0.0.1:20128', auth: 'test-1',
 			apiKey: '', oauth: '', headers: 'X-Route: test', subagent: 'cx/gpt-6.1-sol',
-			resumedAuth: 'test-2', resume: 's1', resolves: 2,
+			resumedAuth: 'test-2', resume: 's1', resolves: 2, effort: 'high', resumedEffort: 'max',
 		});
 	});
 

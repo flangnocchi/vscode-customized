@@ -178,12 +178,12 @@ export function parsedPluginChildren(parsed: IParsedPlugin): ChildCustomization[
  * definition of a given name wins), matching the dedupe used elsewhere.
  * Returns an empty object when the plugins declare no MCP servers.
  */
-export function codexMcpServersFromPlugins(plugins: readonly ICodexClientPlugin[], primaryCwd?: URI): Record<string, ICodexMcpServerConfigJson> {
+export function codexMcpServersFromPlugins(plugins: readonly ICodexClientPlugin[], primaryCwd?: URI, includeDisabled = false): Record<string, ICodexMcpServerConfigJson> {
 	const out: Record<string, ICodexMcpServerConfigJson> = {};
 	for (const plugin of plugins) {
 		for (const def of plugin.parsed?.mcpServers ?? emptyMcpDefs) {
 			const child = plugin.customization?.children?.find((candidate): candidate is McpServerCustomization => candidate.type === CustomizationType.McpServer && candidate.name === def.name);
-			if (child && !isCustomizationEnabled(child)) {
+			if (!includeDisabled && child && !isCustomizationEnabled(child)) {
 				continue;
 			}
 			if (!Object.prototype.hasOwnProperty.call(out, def.name)) {

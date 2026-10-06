@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { ResourceSet } from '../../../../../../base/common/map.js';
@@ -272,6 +273,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, [pluginA, pluginB]),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		const items = await provider.provideChatSessionCustomizations(testSessionResource, CancellationToken.None);
@@ -290,6 +292,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, []),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 		provider.setDraftCustomAgents(observableValue<readonly AgentCustomization[]>('draftAgents', [{
 			type: CustomizationType.Agent,
@@ -331,6 +334,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, [hostScoped]),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		connection.fireAction({
@@ -373,6 +377,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, [hostPlugin]),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		connection.fireAction({
@@ -457,6 +462,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, []),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		connection.fireAction({
@@ -502,6 +508,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, []),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		connection.fireAction({
@@ -548,6 +555,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, [pluginRef]),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		connection.fireAction({
@@ -586,6 +594,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, [pluginRef]),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		let changeCount = 0;
@@ -668,6 +677,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, []),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		connection.fireAction({
@@ -722,6 +732,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, [container]),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		const items = await provider.provideChatSessionCustomizations(testSessionResource, CancellationToken.None);
@@ -778,6 +789,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, [plugin]),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		const items = await provider.provideChatSessionCustomizations(testSessionResource, CancellationToken.None);
@@ -838,6 +850,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, []),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		connection.fireAction({
@@ -890,6 +903,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, []),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 		connection.fireAction({
 			channel: agentHostSessionId,
@@ -951,6 +965,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, []),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		connection.fireAction({
@@ -1005,6 +1020,7 @@ suite('RemoteAgentHostCustomizationHarness', () => {
 			new NullLogService(),
 			createTestCustomAgentsService(connection, [plugin]),
 			new MockPromptsService(),
+			new TestConfigurationService(),
 		));
 
 		const harnessId = 'remote-agent-host-test';

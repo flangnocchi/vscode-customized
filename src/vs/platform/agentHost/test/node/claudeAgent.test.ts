@@ -6513,8 +6513,8 @@ suite('ClaudeAgent — per-session provider', () => {
 	});
 
 	test('direct model switches rebuild with fresh connections and preserve the SDK session id', async () => {
-		const first = { id: '@provider=vscode-byok-first:cx%2Fmodel' };
-		const second = { id: '@provider=vscode-byok-second:cx%2Fmodel' };
+		const first = { id: '@provider=vscode-byok-first:cx%2Fmodel', config: { thinkingLevel: 'medium' } };
+		const second = { id: '@provider=vscode-byok-second:cx%2Fmodel', config: { thinkingLevel: 'high' } };
 		const resolved: string[] = [];
 		let available = true;
 		const directModels = createTestDirectLanguageModelService({
@@ -6535,14 +6535,14 @@ suite('ClaudeAgent — per-session provider', () => {
 		available = false;
 		await assert.rejects(ctx.agent.chats.sendMessage(chat, 'blocked', undefined, undefined, 'blocked-turn', undefined, undefined, chatContext(chat)), /no longer available/);
 		const connections = ctx.sdk.capturedStartupOptions.slice(1).map(options => ({
-			model: options.model, resume: options.resume,
+			model: options.model, resume: options.resume, effort: options.effort,
 			baseUrl: typeof options.settings === 'string' ? undefined : options.settings?.env?.ANTHROPIC_BASE_URL,
 		}));
 		assert.deepStrictEqual({ resolved, connections, startups: ctx.sdk.startupCallCount }, {
 			resolved: [first.id, second.id], startups: 3,
 			connections: [
-				{ model: 'cx/model', resume: sessionId, baseUrl: 'http://first.test' },
-				{ model: 'cx/model', resume: sessionId, baseUrl: 'http://second.test' },
+				{ model: 'cx/model', resume: sessionId, effort: 'medium', baseUrl: 'http://first.test' },
+				{ model: 'cx/model', resume: sessionId, effort: 'high', baseUrl: 'http://second.test' },
 			],
 		});
 	});
@@ -6968,6 +6968,7 @@ suite('ClaudeAgentSession (Phase 7 §3.2)', () => {
 		const fakeConfigService: IAgentConfigurationService = {
 			onDidRootConfigChange: Event.None,
 			onDidSessionConfigChange: Event.None,
+			getRootValue: () => false,
 			getSessionConfigValues: () => undefined,
 			onDidChangeWorkingDirectoryPending: workingDirectoryPendingChange.event,
 		} as unknown as IAgentConfigurationService;

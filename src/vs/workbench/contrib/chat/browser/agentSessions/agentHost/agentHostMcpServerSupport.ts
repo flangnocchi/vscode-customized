@@ -224,8 +224,9 @@ export function resolveMcpServersForAgentHostDelivery(
 	sessionType: string,
 	workingDirectories: readonly URI[] | undefined,
 	windowRemoteAuthority: string | null,
+	unifiedUserCustomizations = false,
 ): Promise<readonly IAgentHostMcpServerDeliveryResolution[]> {
-	return Promise.all(servers.map(server => resolveMcpServerForAgentHostDelivery(server, configurationResolverService, sessionType, workingDirectories, windowRemoteAuthority)));
+	return Promise.all(servers.map(server => resolveMcpServerForAgentHostDelivery(server, configurationResolverService, sessionType, workingDirectories, windowRemoteAuthority, unifiedUserCustomizations)));
 }
 
 async function resolveMcpServerForAgentHostDelivery(
@@ -234,6 +235,7 @@ async function resolveMcpServerForAgentHostDelivery(
 	sessionType: string,
 	workingDirectories: readonly URI[] | undefined,
 	windowRemoteAuthority: string | null,
+	unifiedUserCustomizations: boolean,
 ): Promise<IAgentHostMcpServerDeliveryResolution> {
 	const definitions = server.readDefinitions().get();
 	const definition = definitions.server;
@@ -269,6 +271,9 @@ async function resolveMcpServerForAgentHostDelivery(
 		&& sessionType === AGENT_HOST_COPILOT_CLI_SESSION_TYPE
 		&& collection?.remoteAuthority === windowRemoteAuthority) {
 		return createResolution(server, definition, source, applicability, AgentHostMcpServerDelivery.RuntimeDiscovered, supported());
+	}
+	if (unifiedUserCustomizations && collection?.provenance === McpCollectionProvenance.ExternalConfiguration) {
+		return createResolution(server, definition, source, applicability, AgentHostMcpServerDelivery.NotDelivered, unsupported([AgentHostMcpSupportReason.UnsupportedSourceLocation]));
 	}
 
 	if (collection && McpCollectionDefinition.isWorkspaceDiscovered(collection) && !McpCollectionDefinition.isVscodeMcpJson(collection)) {
