@@ -136,10 +136,6 @@ export interface IByokLmChatResult {
  * agent host can advertise it to the SDK runtime without any host-side config.
  */
 export interface IByokLmModelInfo {
-	/** Wire protocols the provider explicitly supports for direct harness connections. No credentials. */
-	readonly directConnectionProtocols?: readonly ByokLmDirectProtocol[];
-	readonly supportsToolCalling?: boolean;
-	readonly hiddenForCopilot?: boolean;
 	/** Provider/vendor name (the LM API vendor that registered the model). */
 	readonly vendor: string;
 	/** Provider-local model id. */
@@ -165,32 +161,6 @@ export interface IByokLmModelInfo {
 	readonly supportedReasoningEfforts?: readonly string[];
 	/** Default reasoning effort advertised by the renderer model, when known. */
 	readonly defaultReasoningEffort?: string;
-}
-
-export type ByokLmDirectProtocol = 'messages' | 'responses';
-
-export const BYOK_DIRECT_PROVIDER_PREFIX = 'vscode-byok-';
-
-/** A collision-free provider key keeps configured groups and concurrent connections separate. */
-export function getByokDirectModelProvider(model: IByokLmModelInfo): string {
-	const identifier = model.modelIdentifier ?? getByokLmAgentModelId(model);
-	return BYOK_DIRECT_PROVIDER_PREFIX + Array.from(new TextEncoder().encode(identifier), byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
-export function getByokDirectModelSelectionId(model: IByokLmModelInfo): string {
-	return `@provider=${getByokDirectModelProvider(model)}:${encodeURIComponent(model.id)}`;
-}
-
-/** Resolved on demand over the private bridge; never publish credentials in model metadata. */
-export interface IByokLmDirectConnection {
-	readonly baseUrl: string;
-	readonly modelId: string;
-	readonly headers?: Readonly<Record<string, string>>;
-}
-
-export interface IByokLmDirectConnectionRequest {
-	readonly modelIdentifier: string;
-	readonly protocol: ByokLmDirectProtocol;
 }
 
 /**
@@ -230,8 +200,6 @@ export const IAgentHostByokLmHandler = createDecorator<IAgentHostByokLmHandler>(
 export interface IAgentHostByokLmHandler {
 	readonly _serviceBrand: undefined;
 
-	resolveDirectConnection?(request: IByokLmDirectConnectionRequest): Promise<IByokLmDirectConnection>;
-
 	/**
 	 * Fires when the renderer's set of BYOK models changes, so the node agent
 	 * host can re-enumerate them for the model picker. Optional: test fakes may
@@ -260,7 +228,6 @@ export interface IAgentHostByokLmHandler {
  * pushes its models over {@link onDidChangeModels}; `chat` stays a round-trip.
  */
 export interface IByokLmBridgeConnection {
-	resolveDirectConnection?(request: IByokLmDirectConnectionRequest): Promise<IByokLmDirectConnection>;
 	chat(request: IByokLmChatRequest): Promise<IByokLmChatResult>;
 	/** Emits the renderer's current BYOK model snapshot on subscribe and on every change. */
 	readonly onDidChangeModels: Event<IByokLmModelInfo[]>;

@@ -3,8 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IDirectLanguageModelService } from '../../../node/directLanguageModelService.js';
-import { createTestDirectLanguageModelService } from '../testDirectLanguageModelService.js';
 import type { CCAModel } from '@vscode/copilot-api';
 import assert from 'assert';
 import { IAgentHostStartupPerformance, NullAgentHostStartupPerformance } from '../../../node/agentHostStartupPerformance.js';
@@ -276,7 +274,6 @@ async function createAgent(disposables: Pick<DisposableStore, 'add'>, options: I
 	instantiationService.stub(ICopilotApiService, { _serviceBrand: undefined, models: async () => models });
 	instantiationService.stub(ICodexProxyService, { _serviceBrand: undefined });
 	instantiationService.stub(IAgentConfigurationService, configurationService);
-	instantiationService.stub(IDirectLanguageModelService, createTestDirectLanguageModelService());
 	instantiationService.stub(IAgentHostWorktreeIsolation, new NullAgentHostWorktreeIsolation());
 	instantiationService.stub(IAgentHostStartupPerformance, NullAgentHostStartupPerformance);
 	instantiationService.stub(IAgentHostStateManager, stateManager);

@@ -1192,8 +1192,7 @@ export class ClaudeAgentSession extends Disposable {
 		const crossesTransport =
 			this.isPipelineReady &&
 			parsed.explicitProvider &&
-			(claudeTransportForProvider(parsed.provider) !== this._transportKind ||
-				(this._materializedTransport?.kind === 'direct' && this._materializedTransport.selectionId !== model.id));
+			claudeTransportForProvider(parsed.provider) !== this._transportKind;
 		if (crossesTransport) {
 			// Cross-transport switch on a live session: the running subprocess is
 			// pinned to the old transport/credential, and pushing the new model onto

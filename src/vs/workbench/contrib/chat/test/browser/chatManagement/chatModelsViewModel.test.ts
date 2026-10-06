@@ -73,8 +73,6 @@ class MockLanguageModelsService implements ILanguageModelsService {
 		throw new Error('Method not implemented.');
 	}
 
-	async resolveLanguageModelProviderConfiguration(): Promise<undefined> { return undefined; }
-
 	getVendors(): ILanguageModelProviderDescriptor[] {
 		return this.vendors.map(v => ({ ...v, isDefault: v.vendor === 'copilot' }));
 	}

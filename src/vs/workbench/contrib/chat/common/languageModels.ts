@@ -597,9 +597,6 @@ export interface ILanguageModelsService {
 
 	getLanguageModelGroups(vendor: string): ILanguageModelsGroup[];
 
-	/** Resolve provider-group secrets for an extension-owned direct connection command. */
-	resolveLanguageModelProviderConfiguration(modelIdentifier: string): Promise<IStringDictionary<unknown> | undefined>;
-
 	/**
 	 * Returns true if the given vendor's provider has completed at least one
 	 * model resolution since registration. A `false` result indicates the
@@ -862,15 +859,6 @@ const languageModelChatProviderType = {
 			deprecated: true,
 			deprecationMessage: localize('vscode.extension.contributes.languageModels.managementCommand.deprecated', "The managementCommand property is deprecated and will be removed in a future release. Use the new configuration property instead.")
 		},
-		directConnection: {
-			type: 'object',
-			description: localize('languageModels.directConnection', "An extension command that resolves a direct model connection for Agent Host harnesses. Credentials are resolved only when a conversation connects."),
-			required: ['command', 'protocols'],
-			properties: {
-				command: { type: 'string' },
-				protocols: { type: 'array', items: { type: 'string', enum: ['messages', 'responses'] } },
-			},
-		},
 		deprecation: {
 			type: 'object',
 			description: localize('vscode.extension.contributes.languageModels.deprecation', "Marks this language model chat provider as deprecated. When set, the Manage Models view renders the provider with a link pointing to a replacement."),
@@ -888,8 +876,7 @@ const languageModelChatProviderType = {
 	}
 } as const satisfies IJSONSchema;
 
-export type IUserFriendlyLanguageModel = Omit<TypeFromJsonSchema<typeof languageModelChatProviderType>, 'deprecation' | 'directConnection'> & {
-	readonly directConnection?: { readonly command: string; readonly protocols: readonly ('messages' | 'responses')[] };
+export type IUserFriendlyLanguageModel = Omit<TypeFromJsonSchema<typeof languageModelChatProviderType>, 'deprecation'> & {
 	/**
 	 * Marks a provider as deprecated. The Manage Models view renders a link
 	 * (pointing to a replacement, e.g. a `vscode:extension/<publisher>.<name>` URI)
@@ -1226,7 +1213,6 @@ export class LanguageModelsService implements ILanguageModelsService {
 				displayName: item.displayName,
 				configuration: item.configuration,
 				managementCommand: item.managementCommand,
-				directConnection: item.directConnection,
 				deprecation: item.deprecation,
 				when: item.when,
 				isDefault: item.vendor === COPILOT_VENDOR_ID
@@ -1545,15 +1531,6 @@ export class LanguageModelsService implements ILanguageModelsService {
 		const configuration = this.getModelConfiguration(modelId);
 		const mergedOptions = configuration ? { ...options, configuration: { ...configuration, ...options.configuration } } : options;
 		return provider.sendChatRequest(modelId, messages, from, mergedOptions, token);
-	}
-
-	async resolveLanguageModelProviderConfiguration(modelIdentifier: string): Promise<IStringDictionary<unknown> | undefined> {
-		const metadata = this._modelCache.get(modelIdentifier);
-		if (!metadata) {
-			throw new Error('Language model is no longer registered');
-		}
-		const group = this._modelsGroups.get(metadata.vendor)?.find(group => group.modelIdentifiers.includes(modelIdentifier))?.group;
-		return group ? this._resolveConfiguration(group, this._vendors.get(metadata.vendor)?.configuration) : undefined;
 	}
 
 	/**

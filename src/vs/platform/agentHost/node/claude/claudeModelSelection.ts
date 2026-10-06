@@ -9,7 +9,6 @@ import { CLAUDE_PROVIDER_ANTHROPIC, CLAUDE_PROVIDER_COPILOT } from '../../common
 import type { ModelSelection } from '../../common/state/protocol/state.js';
 import { toSdkModelId } from './claudeModelId.js';
 import type { ClaudeTransportMode } from './claudeTransportMode.js';
-import { BYOK_DIRECT_PROVIDER_PREFIX } from '../../common/agentHostByokLm.js';
 
 /**
  * Prefix that marks a {@link ModelSelection.id} as carrying an explicit
@@ -84,21 +83,17 @@ export function toClaudeSdkModelId(model: ModelSelection | undefined): string | 
 	if (!model) {
 		return undefined;
 	}
-	const parsed = parseClaudeModelSelection(model);
-	return parsed.provider.startsWith(BYOK_DIRECT_PROVIDER_PREFIX) ? parsed.modelId : toSdkModelId(parsed.modelId);
+	return toSdkModelId(parseClaudeModelSelection(model).modelId);
 }
 
 /**
  * Maps a provider token to the transport it routes through. The relationship is
- * fixed and total: registered direct providers use their gateway,
- * {@link CLAUDE_PROVIDER_ANTHROPIC} is native, and other tokens use the proxy. Defaulting the unknown
+ * fixed and total: only {@link CLAUDE_PROVIDER_ANTHROPIC} is native; every other
+ * token — Copilot, or anything unrecognized — is proxy. Defaulting the unknown
  * case to `proxy` keeps an unexpected token on the safe, GitHub-gated path
  * rather than silently attempting a native run without a credential.
  */
 export function claudeTransportForProvider(provider: string): ClaudeTransportMode {
-	if (provider.startsWith(BYOK_DIRECT_PROVIDER_PREFIX)) {
-		return 'direct';
-	}
 	return provider === CLAUDE_PROVIDER_ANTHROPIC ? 'native' : 'proxy';
 }
 

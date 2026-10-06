@@ -10,7 +10,7 @@ import type { AccountInfo } from '@anthropic-ai/claude-agent-sdk';
  * local Copilot-CAPI proxy (requires GitHub auth); `native` talks to Anthropic
  * directly on the user's own credentials (no GitHub).
  */
-export type ClaudeTransportMode = 'proxy' | 'native' | 'direct';
+export type ClaudeTransportMode = 'proxy' | 'native';
 
 /**
  * The three precedence inputs {@link resolveClaudeTransportMode} decides over.

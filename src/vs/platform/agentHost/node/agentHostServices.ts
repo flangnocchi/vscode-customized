@@ -31,7 +31,6 @@ import { AgentHostGitService } from './agentHostGitService.js';
 import { AgentPluginManager } from './agentPluginManager.js';
 import { AgentSdkDownloader, IAgentSdkDownloader } from './agentSdkDownloader.js';
 import { IByokLmBridgeRegistry } from './byokLmBridgeRegistry.js';
-import { DirectLanguageModelService, IDirectLanguageModelService } from './directLanguageModelService.js';
 import { ClaudeAgentSdkService, IClaudeAgentSdkService } from './claude/claudeAgentSdkService.js';
 import { ClaudeProxyService, IClaudeProxyService } from './claude/claudeProxyService.js';
 import { ByokLmProxyService, IByokLmProxyService, NullByokLmProxyService } from './copilot/byokLmProxyService.js';
@@ -145,7 +144,6 @@ export function registerAgentHostHostServices(services: ServiceCollection, input
 	services.set(IAgentPluginManager, new SyncDescriptor(AgentPluginManager, [inputs.userDataPath]));
 	services.set(IAgentSdkDownloader, new SyncDescriptor(AgentSdkDownloader));
 	services.set(IClaudeAgentSdkService, new SyncDescriptor(ClaudeAgentSdkService));
-	services.set(IDirectLanguageModelService, new SyncDescriptor(DirectLanguageModelService));
 	services.set(IClaudeProxyService, new SyncDescriptor(ClaudeProxyService));
 	services.set(ICodexProxyService, new SyncDescriptor(CodexProxyService, [undefined]));
 	services.set(IAgentHostOTelService, new SyncDescriptor(AgentHostOTelService, [inputs.fetchFn]));

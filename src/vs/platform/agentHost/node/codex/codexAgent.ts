@@ -163,7 +163,6 @@ import { codexUnifiedUserCustomizationOverrides, type ICodexUnifiedUserCustomiza
 import type { ConfigWriteResponse } from './protocol/generated/v2/ConfigWriteResponse.js';
 import { ensurePortableCodexProxyProvider } from './codexProviderConfiguration.js';
 import { reportCodexProviderSwitch } from './codexProviderSwitchTelemetry.js';
-import { IDirectLanguageModelService, isDirectLanguageModelSelection } from '../directLanguageModelService.js';
 import { formatGuardianDenialNotification, formatGuardianReviewStatusNotification, summarizeGuardianReviewAction, toGuardianAssessmentEventJson } from './codexGuardianReview.js';
 import { CODEX_COMPACT_SLASH_COMMAND } from '../codexCompactCommand.js';
 
@@ -1341,12 +1340,9 @@ export class CodexAgent extends Disposable implements IAgent {
 		@ISessionDataService private readonly _sessionDataService: ISessionDataService,
 		@ITelemetryService private readonly _telemetryService: ITelemetryService,
 		@IAgentHostStartupPerformance private readonly _startupPerformance: IAgentHostStartupPerformance,
-		@IDirectLanguageModelService private readonly _directModels: IDirectLanguageModelService,
 	) {
 		super();
 		this._worktree = worktree;
-		this._register(this._directModels.onDidChangeModels(() => this._publishModels()));
-		this._register(this._configurationService.onDidRootConfigChange(() => this._publishModels()));
 		this._metadataStore = this._instantiationService.createInstance(CodexSessionMetadataStore);
 		this._githubMcpServerEnabled = this._isGitHubMcpServerEnabled();
 		this._publishAccountInfo({ status: 'unknown' });
@@ -1423,7 +1419,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			restartChatDiscovery: () => this._restartChatDiscovery(),
 			refreshModels: () => this.refreshModels(),
 		}, this._configurationService, this._agentSdkDownloader, this._logService));
-		this._publishModels();
 		queueMicrotask(async () => {
 			try {
 				await this._probeAccountAtStartup();
@@ -1770,37 +1765,7 @@ export class CodexAgent extends Disposable implements IAgent {
 		return refreshPromise;
 	}
 
-	private _publishModels(): void {
-		this._models.set([...this._copilotModels, ...this._codexModels, ...this._directModels.getModels('responses', this.id)], undefined);
-	}
-
-	private async _directModelConfigOverrides(model: ModelSelection | undefined): Promise<Record<string, JsonValue>> {
-		if (!model || !isDirectLanguageModelSelection(model.id)) {
-			return {};
-		}
-		const connection = await this._directModels.resolve(model.id, 'responses');
-		const { modelProvider } = parseCodexModelSelection(model);
-		return {
-			model_providers: {
-				[modelProvider]: {
-					name: 'VS Code BYOK',
-					base_url: connection.baseUrl,
-					wire_api: 'responses',
-					requires_openai_auth: false,
-					supports_websockets: false,
-					http_headers: { ...connection.headers },
-				},
-			},
-		};
-	}
-
 	private _ensureModelProviderAuthenticated(model: ModelSelection | undefined): void {
-		if (model && isDirectLanguageModelSelection(model.id)) {
-			if (!this._directModels.getModels('responses', this.id).some(candidate => candidate.id === model.id)) {
-				throw new Error('The selected direct language model is no longer available');
-			}
-			return;
-		}
 		const modelProvider = model ? parseCodexModelSelection(model).modelProvider : CODEX_COPILOT_MODEL_PROVIDER;
 		if (modelProvider !== CODEX_COPILOT_MODEL_PROVIDER) {
 			return;
@@ -1832,9 +1797,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			return model;
 		}
 		if (model) {
-			if (isDirectLanguageModelSelection(model.id)) {
-				throw new Error('The selected direct language model is no longer available');
-			}
 			this._logService.warn(`[Codex] Unknown model '${model.id}'`);
 			return undefined;
 		}
@@ -2180,7 +2142,7 @@ export class CodexAgent extends Disposable implements IAgent {
 		if (generation !== this._modelCatalogGeneration || this._isShuttingDown || this._store.isDisposed) {
 			return;
 		}
-		this._publishModels();
+		this._models.set([...this._copilotModels, ...this._codexModels], undefined);
 		// Last, never first: announcing `ready` before the catalog lands is how the
 		// window renders "no account found".
 		this._sdkSetupChannel.refresh();
@@ -5058,7 +5020,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			const threadConfig: Record<string, JsonValue> = {
 				web_search: narrowWebSearchMode(validatedConfig[CodexSessionConfigKey.WebSearchMode]) ?? codexSessionConfigDefaults[CodexSessionConfigKey.WebSearchMode],
 				...this._modelContextConfigOverrides(model),
-				...await this._directModelConfigOverrides(model),
 				[CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_CONFIG_KEY]: true,
 			};
 			if (Object.keys(mcpServers).length > 0) {
@@ -5446,7 +5407,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			const forkCwd = forkManagedWorkingDirectory?.fsPath ?? runtimeWorkspaceRoots?.[0] ?? sourcePrimary?.fsPath;
 			const forkConfig: Record<string, JsonValue> = {
 				...this._modelContextConfigOverrides(model),
-				...await this._directModelConfigOverrides(model),
 				...this._portableHistoryConfig(hasNativeHistory),
 				[CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_CONFIG_KEY]: true,
 				'features.image_generation': this._imageGenerationEnabledForModelProvider(resolvedModel?.modelProvider ?? sourceRead.thread.modelProvider),
@@ -5671,7 +5631,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			web_search: narrowWebSearchMode(config[CodexSessionConfigKey.WebSearchMode]) ?? codexSessionConfigDefaults[CodexSessionConfigKey.WebSearchMode],
 			...customizationLaunch.config,
 			...this._modelContextConfigOverrides(model),
-			...await this._directModelConfigOverrides(model),
 			[CODEX_DEFAULT_MODE_REQUEST_USER_INPUT_CONFIG_KEY]: true,
 			'features.image_generation': this._imageGenerationEnabledForModelProvider(resolvedModel.modelProvider),
 		};
@@ -6863,7 +6822,7 @@ export class CodexAgent extends Disposable implements IAgent {
 				}
 				const unifiedCustomizations = await this._unifiedUserCustomizationOverrides(conn.client, session.workingDirectory?.fsPath, mcpServers, session);
 				session.unifiedMcpServerAliases = unifiedCustomizations.mcpServerAliases;
-				const baseResumeConfig = { ...customizationLaunch.config, ...this._modelContextConfigOverrides(session.model), ...await this._directModelConfigOverrides(session.model), ...unifiedCustomizations.overrides };
+				const baseResumeConfig = { ...customizationLaunch.config, ...this._modelContextConfigOverrides(session.model), ...unifiedCustomizations.overrides };
 				let sessionHookTrust = await this._buildSessionHookTrustState(conn.client, session.workingDirectory?.fsPath);
 				const resumeWithHookTrust = async () => {
 					if (!this._isCurrentSessionHookTrustState(sessionHookTrust, session.workingDirectory?.fsPath)) {

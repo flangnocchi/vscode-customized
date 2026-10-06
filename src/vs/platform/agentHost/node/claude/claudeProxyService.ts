@@ -33,7 +33,6 @@ import {
 } from './anthropicErrors.js';
 import { tryParseClaudeModelId } from './claudeModelId.js';
 import { parseProxyBearer } from './claudeProxyAuth.js';
-import type { IByokLmDirectConnection } from '../../common/agentHostByokLm.js';
 
 // #region Public types
 
@@ -70,7 +69,6 @@ export interface IClaudeProxyHandle extends ILoopbackProxyHandle {
  */
 export type ClaudeTransport =
 	| { readonly kind: 'proxy'; readonly handle: IClaudeProxyHandle }
-	| { readonly kind: 'direct'; readonly selectionId: string; resolveConnection(): Promise<IByokLmDirectConnection> }
 	| { readonly kind: 'native' };
 
 /**

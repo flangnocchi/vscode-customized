@@ -3,8 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IDirectLanguageModelService } from '../../node/directLanguageModelService.js';
-import { createTestDirectLanguageModelService } from './testDirectLanguageModelService.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { AccountInfo, AgentInfo, ForkSessionOptions, ForkSessionResult, GetSessionMessagesOptions, McpSdkServerConfigWithInstance, McpServerStatus, ModelInfo, Options, PermissionMode, Query, SDKControlInterruptResponse, SDKMessage, SDKSessionInfo, SDKUserMessage, SdkMcpToolDefinition, SessionMessage, SessionMutationOptions, Settings, SlashCommand, WarmQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
@@ -1125,7 +1123,7 @@ class CapturingLogService extends NullLogService {
 
 function createTestContext(
 	disposables: Pick<DisposableStore, 'add'>,
-	overrides?: { logService?: ILogService; database?: TestSessionDatabase; sessionDataService?: ISessionDataService; rootConfig?: Record<string, unknown>; userHome?: URI; gitHubEndpointService?: IAgentHostGitHubEndpointService; copilotApiService?: ICopilotApiService; claudeProxyService?: IClaudeProxyService; checkpointService?: IAgentHostCheckpointService; nativeAccount?: AccountInfo; startupPerformance?: IAgentHostStartupPerformance; directModels?: IDirectLanguageModelService },
+	overrides?: { logService?: ILogService; database?: TestSessionDatabase; sessionDataService?: ISessionDataService; rootConfig?: Record<string, unknown>; userHome?: URI; gitHubEndpointService?: IAgentHostGitHubEndpointService; copilotApiService?: ICopilotApiService; claudeProxyService?: IClaudeProxyService; checkpointService?: IAgentHostCheckpointService; nativeAccount?: AccountInfo; startupPerformance?: IAgentHostStartupPerformance },
 ): ITestContext {
 	const proxy = new FakeClaudeProxyService();
 	const api = new FakeCopilotApiService();
@@ -1167,7 +1165,6 @@ function createTestContext(
 		[IAgentPluginManager, new FakeAgentPluginManager()],
 		[IAgentHostGitService, createNoopGitService()],
 		[IAgentHostCheckpointService, overrides?.checkpointService ?? NULL_CHECKPOINT_SERVICE],
-		[IDirectLanguageModelService, overrides?.directModels ?? createTestDirectLanguageModelService()],
 		[IAgentConfigurationService, configService],
 		[IAgentHostStateManager, stateManager],
 		[IAgentHostCustomizationEnablementService, reducerBackedEnablementService(stateManager)],
@@ -1268,7 +1265,6 @@ function createTestAgentStateServices(disposables: Pick<DisposableStore, 'add'>)
 	const logService = new NullLogService();
 	const stateManager = disposables.add(new AgentHostStateManager(logService));
 	return [
-		[IDirectLanguageModelService, createTestDirectLanguageModelService()],
 		[IAgentConfigurationService, disposables.add(new AgentConfigurationService(stateManager, logService))],
 		[IAgentHostStartupPerformance, NullAgentHostStartupPerformance],
 		[IAgentHostStateManager, stateManager],
@@ -4348,7 +4344,6 @@ suite('ClaudeAgent', () => {
 			[IAgentPluginManager, new FakeAgentPluginManager()],
 			[IAgentHostGitService, createNoopGitService()],
 			[IAgentHostCheckpointService, NULL_CHECKPOINT_SERVICE],
-			[IDirectLanguageModelService, createTestDirectLanguageModelService()],
 			[IAgentConfigurationService, configService],
 			[IAgentHostStateManager, stateManager],
 			[IAgentHostCustomizationEnablementService, reducerBackedEnablementService(stateManager)],
@@ -5723,7 +5718,6 @@ suite('ClaudeAgent', () => {
 			[IAgentPluginManager, new FakeAgentPluginManager()],
 			[IAgentHostGitService, createNoopGitService()],
 			[IAgentHostCheckpointService, NULL_CHECKPOINT_SERVICE],
-			[IDirectLanguageModelService, createTestDirectLanguageModelService()],
 			[IAgentConfigurationService, configService],
 			[IAgentHostStateManager, stateManager],
 			[IAgentHostCustomizationEnablementService, reducerBackedEnablementService(stateManager)],
@@ -6512,41 +6506,6 @@ suite('ClaudeAgent — per-session provider', () => {
 		});
 	});
 
-	test('direct model switches rebuild with fresh connections and preserve the SDK session id', async () => {
-		const first = { id: '@provider=vscode-byok-first:cx%2Fmodel', config: { thinkingLevel: 'medium' } };
-		const second = { id: '@provider=vscode-byok-second:cx%2Fmodel', config: { thinkingLevel: 'high' } };
-		const resolved: string[] = [];
-		let available = true;
-		const directModels = createTestDirectLanguageModelService({
-			getModels: () => (available ? [first, second] : []).map(model => ({ ...model, provider: 'claude', name: 'Gateway', supportsVision: false })),
-			resolve: async id => {
-				resolved.push(id);
-				return { baseUrl: id === first.id ? 'http://first.test' : 'http://second.test', modelId: 'cx/model' };
-			},
-		});
-		const ctx = createTestContext(disposables, { directModels });
-		const { sessionUri, sessionId } = await materializeSession(ctx);
-		const chat = defaultChatUri(sessionUri);
-		for (const model of [first, second]) {
-			await ctx.agent.chats.changeModel(chat, model, chatContext(chat));
-			ctx.sdk.nextQueryMessages = [makeSystemInitMessage(sessionId), makeResultSuccess(sessionId)];
-			await ctx.agent.chats.sendMessage(chat, 'again', undefined, undefined, model.id, undefined, undefined, chatContext(chat));
-		}
-		available = false;
-		await assert.rejects(ctx.agent.chats.sendMessage(chat, 'blocked', undefined, undefined, 'blocked-turn', undefined, undefined, chatContext(chat)), /no longer available/);
-		const connections = ctx.sdk.capturedStartupOptions.slice(1).map(options => ({
-			model: options.model, resume: options.resume, effort: options.effort,
-			baseUrl: typeof options.settings === 'string' ? undefined : options.settings?.env?.ANTHROPIC_BASE_URL,
-		}));
-		assert.deepStrictEqual({ resolved, connections, startups: ctx.sdk.startupCallCount }, {
-			resolved: [first.id, second.id], startups: 3,
-			connections: [
-				{ model: 'cx/model', resume: sessionId, effort: 'medium', baseUrl: 'http://first.test' },
-				{ model: 'cx/model', resume: sessionId, effort: 'high', baseUrl: 'http://second.test' },
-			],
-		});
-	});
-
 	test('a same-transport model change still hot-swaps the live query (no rebuild)', async () => {
 		const ctx = createTestContext(disposables);
 		const { sessionUri, advance } = await materializeSession(ctx, { block: true });
@@ -6977,7 +6936,6 @@ suite('ClaudeAgentSession (Phase 7 §3.2)', () => {
 		const services = new ServiceCollection(
 			...claudeFileEnvServices(disposables),
 			[ILogService, new NullLogService()],
-			[IDirectLanguageModelService, createTestDirectLanguageModelService()],
 			[IAgentConfigurationService, fakeConfigService],
 			[IAgentHostStateManager, stateManager],
 			[IAgentHostCustomizationEnablementService, reducerBackedEnablementService(stateManager)],
@@ -8644,7 +8602,6 @@ suite('ClaudeAgent — Phase 11 customizations', () => {
 			[IAgentPluginManager, pluginManager],
 			[IAgentHostGitService, createNoopGitService()],
 			[IAgentHostCheckpointService, NULL_CHECKPOINT_SERVICE],
-			[IDirectLanguageModelService, createTestDirectLanguageModelService()],
 			[IAgentConfigurationService, configService],
 			[IAgentHostStateManager, stateManager],
 			[IAgentHostSessionTitleSignal, disposables.add(new AgentHostSessionTitleSignal(stateManager))],

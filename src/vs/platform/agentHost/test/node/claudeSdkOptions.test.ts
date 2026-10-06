@@ -269,32 +269,6 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 		assert.deepStrictEqual({ strict: managed.strictMcpConfig, sources: managed.settingSources, legacy: legacy.strictMcpConfig }, { strict: false, sources: ['user', 'project', 'local'], legacy: undefined });
 	});
 
-	test('direct gateway options preserve exact model ids, override ambient auth, and re-resolve on resume', async () => {
-		let resolves = 0;
-		const transport: ClaudeTransport = {
-			kind: 'direct', selectionId: '@provider=vscode-byok-test:cx%2Fgpt-6.1-sol',
-			resolveConnection: async () => {
-				resolves++;
-				return { baseUrl: 'http://127.0.0.1:20128', modelId: 'cx/gpt-6.1-sol', headers: { authorization: `Bearer test-${resolves}`, 'X-Route': 'test' } };
-			},
-		};
-		const options = await buildOptions({ ...input(undefined), model: { id: transport.selectionId, config: { thinkingLevel: 'high' } } }, transport, () => { });
-		const resumed = await buildOptions({ ...input(undefined), model: { id: transport.selectionId, config: { thinkingLevel: 'max' } }, isResume: true }, transport, () => { });
-		const settings = typeof options.settings === 'string' ? undefined : options.settings;
-		const resumedSettings = typeof resumed.settings === 'string' ? undefined : resumed.settings;
-		assert.deepStrictEqual({
-			model: options.model, baseUrl: settings?.env?.ANTHROPIC_BASE_URL,
-			auth: settings?.env?.ANTHROPIC_AUTH_TOKEN, apiKey: settings?.env?.ANTHROPIC_API_KEY,
-			oauth: settings?.env?.CLAUDE_CODE_OAUTH_TOKEN, headers: settings?.env?.ANTHROPIC_CUSTOM_HEADERS,
-			subagent: settings?.env?.CLAUDE_CODE_SUBAGENT_MODEL, resumedAuth: resumedSettings?.env?.ANTHROPIC_AUTH_TOKEN,
-			resume: resumed.resume, resolves, effort: options.effort, resumedEffort: resumed.effort,
-		}, {
-			model: 'cx/gpt-6.1-sol', baseUrl: 'http://127.0.0.1:20128', auth: 'test-1',
-			apiKey: '', oauth: '', headers: 'X-Route: test', subagent: 'cx/gpt-6.1-sol',
-			resumedAuth: 'test-2', resume: 's1', resolves: 2, effort: 'high', resumedEffort: 'max',
-		});
-	});
-
 	test('non-empty plugins project without duplicate SDK MCP discovery', async () => {
 		const opts = await buildOptions(
 			input([URI.file('/p/a'), URI.file('/p/b')]),

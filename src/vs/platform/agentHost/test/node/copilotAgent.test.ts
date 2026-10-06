@@ -3,8 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IDirectLanguageModelService } from '../../node/directLanguageModelService.js';
-import { createTestDirectLanguageModelService } from './testDirectLanguageModelService.js';
 import type { CopilotClient, CopilotClientOptions, CopilotSession, GitHubTelemetryNotification, PermissionMode, PermissionRequest, SessionConfig, SessionEvent, SessionEventHandler, SessionEventPayload, SessionEventType, TypedSessionEventHandler } from '@github/copilot-sdk';
 import { mock } from '../../../../base/test/common/mock.js';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -3223,7 +3221,6 @@ suite('CopilotAgent', () => {
 		const childServices = new ServiceCollection();
 		const sdkDownloader = new RecordingAgentSdkDownloader();
 		sdkDownloader.resolvableWithoutDownload = false;
-		childServices.set(IDirectLanguageModelService, createTestDirectLanguageModelService());
 		childServices.set(IAgentSdkDownloader, sdkDownloader);
 		childServices.set(IAgentHostCheckpointService, NULL_CHECKPOINT_SERVICE);
 		childServices.set(ICodexProxyService, disposables.add(new CodexProxyService(undefined, new NullLogService(), copilotApiService)));
