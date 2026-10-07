@@ -358,6 +358,7 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 		assert.deepStrictEqual({
 			baseUrl: env.ANTHROPIC_BASE_URL,
 			authToken: env.ANTHROPIC_AUTH_TOKEN,
+			disallowedTools: opts.disallowedTools,
 			nonessential: env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
 			// Projected into `settings.env`; the CLI still re-stamps `AI_AGENT`
 			// for its own Bash tool.
@@ -365,6 +366,7 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 		}, {
 			baseUrl: 'http://127.0.0.1:0',
 			authToken: 'n.s1',
+			disallowedTools: ['WebSearch'],
 			nonessential: '1',
 			aiAgent: 'github_copilot_vscode_agent',
 		});
@@ -376,10 +378,12 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 		assert.deepStrictEqual({
 			baseUrl: env.ANTHROPIC_BASE_URL,
 			authToken: env.ANTHROPIC_AUTH_TOKEN,
+			disallowedTools: opts.disallowedTools,
 			nonessential: env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
 		}, {
 			baseUrl: undefined,
 			authToken: undefined,
+			disallowedTools: [],
 			nonessential: '1',
 		});
 	});

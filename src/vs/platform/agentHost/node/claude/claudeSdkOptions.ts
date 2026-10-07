@@ -181,7 +181,8 @@ export async function buildOptions(
 		allowDangerouslySkipPermissions: true,
 		canUseTool: input.canUseTool,
 		onElicitation: input.onElicitation,
-		disallowedTools: ['WebSearch'],
+		// Keep the Copilot proxy restriction separate from native Claude sessions.
+		disallowedTools: isProxy ? ['WebSearch'] : [],
 		includePartialMessages: true,
 		forwardSubagentText: true,
 		enableFileCheckpointing: true,
