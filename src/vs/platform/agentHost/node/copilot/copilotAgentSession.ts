@@ -38,7 +38,6 @@ import type { AutoModeTier } from '../../common/autoModeTiers.js';
 import type { ChatInputRequestWithPlanReview, IAgentHostPlanReviewAction } from '../../common/agentHostPlanReview.js';
 import { ChatInputRequestPurpose, withChatInputRequestPurpose } from '../../common/meta/agentChatInputRequestMeta.js';
 import { AgentSystemNotificationKind, toAgentSystemNotificationMeta } from '../../common/meta/agentSystemNotificationMeta.js';
-import { hasClientPluginMcpDefaultCwd } from '../../common/meta/clientPluginCustomizationMeta.js';
 import { gitHubMcpServerUrl } from '../../common/githubEndpoints.js';
 import { getSessionSandboxConfig } from '../sessionSandbox.js';
 import { AgentHostAutoApprovePolicyRestrictedConfigKey, AgentHostGlobalAutoApproveEnabledConfigKey, AgentHostAutoReplyAnswer, AgentHostAutoReplyEnabledConfigKey, AgentHostDisableRepoInfoTelemetryConfigKey, platformRootSchema, platformSessionSchema } from '../../common/agentHostSchema.js';
@@ -2765,7 +2764,14 @@ export class CopilotAgentSession extends Disposable {
 
 	private async _handleMcpAuthRequest(request: McpAuthRequest): Promise<McpAuthResult | null | undefined> {
 		const customizationId = this._mcpCustomizations.customizationIdForServer(request.serverName);
-		const enablement = getSdkMcpServerEnablement(this._resolveMcpCustomizationEnablement());
+		const enablement = getSdkMcpServerEnablement(resolveCustomizationEnablement(
+			this._customizationEnablementService,
+			this._ownerSessionUri,
+			this._hostCustomizations(),
+			undefined,
+			undefined,
+			this._mcpCustomizations.pluginMcpServerSources,
+		));
 		if (customizationId !== undefined && enablement.get(customizationId) === false) {
 			this._logService.info(`[Copilot:${this.sessionId}] Suppressed authentication request from disabled MCP server '${request.serverName}'`);
 			return null;
@@ -4111,25 +4117,15 @@ export class CopilotAgentSession extends Disposable {
 		}
 	}
 
-	private _resolveMcpCustomizationEnablement() {
-		const customizations = this._hostCustomizations();
-		const unified = this._appliedSnapshot.disabledUserSkills !== undefined;
-		const clientChildEnablement = unified ? new Map(customizations.flatMap(customization => customization.type === CustomizationType.Plugin ? [[customization.uri, Object.fromEntries(
-			(customization.children ?? []).flatMap(child => child.type === CustomizationType.McpServer && hasClientPluginMcpDefaultCwd(customization, child.name) ? [[child.name, child.enablement ?? []]] : [])
-		)] as const] : [])) : undefined;
-		return resolveCustomizationEnablement(
+	private _getDesiredMcpServerEnablementByName(): ReadonlyMap<string, boolean> {
+		const resolved = resolveCustomizationEnablement(
 			this._customizationEnablementService,
 			this._ownerSessionUri,
-			customizations,
-			clientChildEnablement,
+			this._hostCustomizations(),
+			undefined,
 			undefined,
 			this._mcpCustomizations.pluginMcpServerSources,
-			unified,
 		);
-	}
-
-	private _getDesiredMcpServerEnablementByName(): ReadonlyMap<string, boolean> {
-		const resolved = this._resolveMcpCustomizationEnablement();
 		const enabledById = getSdkMcpServerEnablement(resolved);
 		const candidates = new Map<string, Array<{ readonly server: McpServerCustomization; readonly applied: boolean }>>();
 		const result = new Map<string, boolean>();

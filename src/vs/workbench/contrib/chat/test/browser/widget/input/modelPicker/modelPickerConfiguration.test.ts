@@ -11,7 +11,7 @@ import { IActionWidgetService } from '../../../../../../../../platform/actionWid
 import { IActionWidgetDropdownAction } from '../../../../../../../../platform/actionWidget/browser/actionWidgetDropdown.js';
 import { ITelemetryService } from '../../../../../../../../platform/telemetry/common/telemetry.js';
 import { ModelPickerConfiguration } from '../../../../../browser/widget/input/modelPicker/modelPickerConfiguration.js';
-import { getModelConfigChoices, getModelConfigProperty, IModelConfigurationAccess, MODEL_CONFIG_GROUP_EFFORT, setModelConfigValues } from '../../../../../browser/widget/input/modelPicker/modelPickerModelConfig.js';
+import { getModelConfigChoices, IModelConfigurationAccess } from '../../../../../browser/widget/input/modelPicker/modelPickerModelConfig.js';
 import { ILanguageModelChatMetadata, ILanguageModelChatMetadataAndIdentifier, ILanguageModelConfigurationSchema } from '../../../../../common/languageModels.js';
 import { NullLanguageModelsService } from '../../../../common/languageModels.js';
 
@@ -166,59 +166,6 @@ suite('ModelPickerConfiguration', () => {
 			{ index: 0, value: 32000, label: '32K', description: 'Standard', checked: false, isDefault: true, readOnly: true },
 			{ index: 1, value: 64000, label: '64K', description: 'Extended', checked: true, isDefault: false, readOnly: true },
 		]);
-	});
-
-	test('Local provider effort without a group remains visible with localized choices', () => {
-		const schema: ILanguageModelConfigurationSchema = { properties: { reasoningEffort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], default: 'medium' } } };
-		const result = render(createModel(), {}, schema);
-		assert.deepStrictEqual({ label: result.label, choices: result.sections.map(section => ({ label: section.label, checked: section.kind === undefined ? section.checked : undefined })) }, {
-			label: 'Medium',
-			choices: [
-				{ label: 'Thinking Effort', checked: undefined },
-				{ label: 'Low', checked: false },
-				{ label: 'Medium', checked: true },
-				{ label: 'High', checked: false },
-				{ label: 'Extra High', checked: false },
-				{ label: 'Max', checked: false },
-			],
-		});
-	});
-
-	test('Local effort choices tolerate a provider supplying labels keyed by value', () => {
-		const schema: ILanguageModelConfigurationSchema = { properties: { reasoningEffort: { type: 'string', enum: ['low', 'medium', 'high'], default: 'medium' } } };
-		Object.assign(schema.properties!.reasoningEffort, { enumItemLabels: { low: 'Low', medium: 'Medium', high: 'High' } });
-		const result = render(createModel(), {}, schema);
-		assert.deepStrictEqual({ label: result.label, choices: result.sections.map(section => section.label) }, {
-			label: 'Medium', choices: ['Thinking Effort', 'Low', 'Medium', 'High'],
-		});
-	});
-
-	test('Local effort edits retain the provider key without mutating its schema or inventing a default', async () => {
-		const model = createModel();
-		const configuration: Record<string, string> = {};
-		const schema: ILanguageModelConfigurationSchema = { properties: { reasoningEffort: { type: 'string', enum: ['low', 'high'] } } };
-		const access: IModelConfigurationAccess = {
-			getModelConfiguration: () => configuration,
-			getModelConfigurationSchema: () => schema,
-			getModelConfigurationActions: () => [],
-			setModelConfiguration: async (_modelId, values) => { Object.assign(configuration, values); },
-		};
-		const before = getModelConfigProperty(model, access, MODEL_CONFIG_GROUP_EFFORT);
-		await setModelConfigValues(model, access, { reasoningEffort: 'high' });
-		const after = getModelConfigProperty(model, access, MODEL_CONFIG_GROUP_EFFORT);
-		assert.deepStrictEqual({ before: before?.value, key: after?.key, after: after?.value, configuration, schema }, {
-			before: undefined, key: 'reasoningEffort', after: 'high', configuration: { reasoningEffort: 'high' },
-			schema: { properties: { reasoningEffort: { type: 'string', enum: ['low', 'high'] } } },
-		});
-	});
-
-	test('effort fallback preserves explicit grouping and provider labels', () => {
-		const choices = render(createModel(), {}, { properties: { thinkingLevel: { type: 'string', enum: ['low', 'high'], enumItemLabels: ['Quick', 'Deep'], default: 'high' } } });
-		const otherGroup = render(createModel(), {}, { properties: { reasoningEffort: { group: 'other', type: 'string', enum: ['low', 'high'], default: 'high' } } });
-		const unrelated = render(createModel(), {}, { properties: { unrelated: { type: 'string', enum: ['low', 'high'], default: 'high' } } });
-		assert.deepStrictEqual({ choices: choices.sections.map(section => section.label), otherGroup: otherGroup.sections, unrelated: unrelated.sections }, {
-			choices: ['Thinking Effort', 'Quick', 'Deep'], otherGroup: [], unrelated: [],
-		});
 	});
 
 	test('legacy context choices retain numeric-string formatting', () => {

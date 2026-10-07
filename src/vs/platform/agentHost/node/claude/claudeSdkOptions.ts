@@ -70,7 +70,6 @@ export interface IBuildOptionsInput {
 	readonly mcpServers: Record<string, McpServerConfig> | undefined;
 	/** Workspace MCP servers that must be blocked before native project discovery runs. */
 	readonly deniedMcpServers?: readonly ClaudeDeniedMcpServerSpec[];
-	readonly unifiedUserCustomizations?: boolean;
 	/**
 	 * SDK-prefixed tool names to auto-approve without prompting (projected
 	 * onto `Options.allowedTools`). Used for the agent host's feedback server
@@ -193,7 +192,6 @@ export async function buildOptions(
 			? { resume: input.sessionId, ...(input.resumeSessionAt ? { resumeSessionAt: input.resumeSessionAt } : {}) }
 			: { sessionId: input.sessionId }),
 		...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
-		...(input.unifiedUserCustomizations ? { strictMcpConfig: false } : {}),
 		...(input.allowedTools && input.allowedTools.length > 0 ? { allowedTools: [...input.allowedTools] } : {}),
 		...(input.plugins && input.plugins.length > 0
 			? { plugins: input.plugins.map(plugin => ({ type: 'local' as const, path: plugin.uri.fsPath, skipMcpDiscovery: plugin.skipMcpDiscovery })) }
@@ -281,13 +279,12 @@ export function toClaudeMcpServers(
  * because the enumeration never iterates a turn. The caller (`_fetchNativeModels`)
  * aborts the returned `abortController` during teardown, alongside `query.close()`.
  */
-export function buildModelEnumerationOptions(unifiedUserCustomizations = false): Options {
+export function buildModelEnumerationOptions(): Options {
 	return {
 		cwd: tmpdir(),
 		executable: process.execPath as 'node',
 		env: buildSubprocessEnv(false),
 		abortController: new AbortController(),
-		...(unifiedUserCustomizations ? { strictMcpConfig: true, mcpServers: {}, skills: [] } : {}),
 		systemPrompt: { type: 'preset', preset: 'claude_code' },
 		settings: {
 			env: {

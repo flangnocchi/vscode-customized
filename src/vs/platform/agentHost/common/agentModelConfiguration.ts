@@ -6,32 +6,10 @@
 import { formatTokenCount } from '../../../base/common/numbers.js';
 import { localize } from '../../../nls.js';
 import { hasLongContextSurcharge, type ICAPIModelBilling } from './agentModelPricing.js';
-import { getReasoningEffortDescription, getReasoningEffortLabel, resolveDefaultReasoningEffort } from './reasoningEffort.js';
 import type { ConfigPropertySchema, ModelSelection } from './state/protocol/state.js';
 
 /** Model-configuration key for the selected context-window size, in tokens. */
 export const ContextSizeConfigKey = 'contextSize';
-
-/** Builds a thinking-level picker from the efforts advertised by a model. */
-export function createThinkingLevelConfigSchemaProperty(
-	supportedEfforts: readonly { readonly reasoningEffort: string; readonly description?: string }[] | undefined,
-	declaredDefault?: string,
-	modelId?: string,
-): ConfigPropertySchema | undefined {
-	if (!supportedEfforts?.length) {
-		return undefined;
-	}
-	const efforts = supportedEfforts.map(option => option.reasoningEffort);
-	return {
-		type: 'string',
-		title: localize('agent.modelThinkingLevel.title', "Thinking Level"),
-		description: localize('agent.modelThinkingLevel.description', "Controls how much reasoning effort the model uses."),
-		default: resolveDefaultReasoningEffort(efforts, declaredDefault, modelId),
-		enum: efforts,
-		enumLabels: efforts.map(getReasoningEffortLabel),
-		enumDescriptions: supportedEfforts.map(option => option.description || getReasoningEffortDescription(option.reasoningEffort) || ''),
-	};
-}
 
 /**
  * Synthesizes the shared context-size picker property for a CAPI model with a

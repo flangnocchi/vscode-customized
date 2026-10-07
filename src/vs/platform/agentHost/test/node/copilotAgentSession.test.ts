@@ -11,7 +11,6 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { PluginFormat } from '../../../agentPlugins/common/pluginParsers.js';
 import { isCustomizationEnabled } from '../../common/customizationEnablement.js';
-import { toClientPluginMcpDefaultCwdsMeta } from '../../common/meta/clientPluginCustomizationMeta.js';
 import { DeferredPromise, timeout } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
@@ -18203,37 +18202,6 @@ Use the attached image as context.
 				disabledResult: null,
 				enabledResult: { kind: 'token', accessToken: 'enabled-token' },
 				unknownResult: { kind: 'token', accessToken: 'unknown-token' },
-			});
-		});
-
-		test('unified MCP authentication follows the common toggle despite an old session override', async () => {
-			let enabled = true;
-			const serverName = 'shared';
-			const serverId = 'shared-plugin/mcp/shared';
-			const { session, runtime, waitForSignal } = await createAgentSession(disposables, {
-				clientSnapshot: { tools: [], plugins: [], mcpServers: {}, disabledUserSkills: [] },
-				sessionCustomizations: () => [{
-					type: CustomizationType.Plugin, id: 'shared-plugin', uri: 'file:///shared-plugin', name: 'Shared',
-					_meta: toClientPluginMcpDefaultCwdsMeta({ [serverName]: null }),
-					children: [{
-						type: CustomizationType.McpServer, id: serverId, uri: 'file:///shared-plugin/.mcp.json', name: serverName,
-						enablement: [{ kind: CustomizationEnablementKind.Global, enabled }],
-						state: { kind: McpServerStatus.Starting },
-					}],
-				}],
-				resolveCustomizationEnablement: target => ({
-					kind: 'resolved', workingDirectory: { kind: 'workspaceless' },
-					enabled: target.id !== serverId,
-					enablement: target.id === serverId ? [{ kind: CustomizationEnablementKind.Session, enabled: false }] : [],
-				}),
-			});
-			const request = { requestId: 'shared-auth', serverName, serverUrl: 'https://mcp.example.com', reason: 'upscope' as const };
-			const result = runtime.handleMcpAuthRequest(request, { sessionId: 'test-session-1' });
-			await waitForSignal(signal => isAction(signal, ActionType.SessionMcpServerStateChanged));
-			await session.resolveMcpAuthentication({ resource: request.serverUrl, scopes: [], token: 'shared-test-token' });
-			enabled = false;
-			assert.deepStrictEqual({ enabled: await result, disabled: await runtime.handleMcpAuthRequest({ ...request, requestId: 'shared-off' }, { sessionId: 'test-session-1' }) }, {
-				enabled: { kind: 'token', accessToken: 'shared-test-token' }, disabled: null,
 			});
 		});
 

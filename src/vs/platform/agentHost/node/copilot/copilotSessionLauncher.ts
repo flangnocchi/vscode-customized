@@ -136,12 +136,10 @@ type PostToolUseHookInput = Parameters<NonNullable<SessionHooks['onPostToolUse']
  * {@link ActiveClientToolSet} so a window
  * reload (new `clientId`, identical tools/plugins) does not force a restart.
  */
-	export interface IActiveClientSnapshot {
+export interface IActiveClientSnapshot {
 	readonly tools: readonly ToolDefinition[];
 	readonly plugins: readonly ICopilotPluginInfo[];
 	readonly mcpServers: AgentHostMcpServers;
-	/** Present (including empty) when the VS Code user catalog owns discovery. */
-	readonly disabledUserSkills?: readonly string[];
 }
 
 /**
@@ -937,7 +935,7 @@ export class CopilotSessionLauncher implements ICopilotSessionLauncher {
 		// still discover agents from `pluginDirectories`; suppressing that too would also drop
 		// skills and instructions, so it is left alone.
 		const customAgents = plan.isEphemeral ? [] : await toSdkSessionCustomAgents(plugins, plan.resolvedAgentName, this._fileService);
-		const skillDirectories = toSdkSkillDirectories((plan.snapshot.disabledUserSkills ? plugins : pluginsWithoutDirs).flatMap(p => p.skills));
+		const skillDirectories = toSdkSkillDirectories(pluginsWithoutDirs.flatMap(p => p.skills));
 		const instructionDirectories = toSdkInstructionDirectories(plugins.flatMap(p => p.instructions));
 		const model = plan.kind === 'create' ? plan.model : plan.fallback.model;
 		// Keyed by the real, un-aliased model id; a model-less "Auto" session
@@ -1004,12 +1002,10 @@ export class CopilotSessionLauncher implements ICopilotSessionLauncher {
 			? fullSystemPrompt(promptOverrides.systemPrompt)
 			: agentHostPromptRegistry.resolveSystemMessageConfig(effectiveModel, promptContext);
 		this._logService.info(`[Copilot:${plan.sessionId}] Resolved system message: ${describeSystemMessageConfig(systemMessage)}`);
-		const additionalDisabledMcpServers = [
-			...(plan.isEphemeral ? [
-				...plugins.flatMap(plugin => plugin.mcpServers.map(server => server.name)),
-				...Object.keys(plan.snapshot.mcpServers),
-			] : []),
-		];
+		const additionalDisabledMcpServers = plan.isEphemeral ? [
+			...plugins.flatMap(plugin => plugin.mcpServers.map(server => server.name)),
+			...Object.keys(plan.snapshot.mcpServers),
+		] : undefined;
 		const disabledMcpServers = disabledMcpServersSessionOption(plugins, plan.disabledRootMcpServers, additionalDisabledMcpServers);
 		const mcpServers = toSessionConfigMcpServers(plan);
 		if (this._logService.getLevel() <= LogLevel.Trace) {
@@ -1029,7 +1025,6 @@ export class CopilotSessionLauncher implements ICopilotSessionLauncher {
 		return {
 			...byok,
 			...disabledMcpServers,
-			...(plan.snapshot.disabledUserSkills ? { disabledSkills: [...plan.snapshot.disabledUserSkills] } : {}),
 			onEvent: event => {
 				const owner = runtime.configurationResource.toString();
 				if (event.type === 'session.managed_settings_resolved' && !event.agentId) {

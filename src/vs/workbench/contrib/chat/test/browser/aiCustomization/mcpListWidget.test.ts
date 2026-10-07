@@ -18,7 +18,6 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/
 import { Range } from '../../../../../../editor/common/core/range.js';
 import { CustomizationEnablementKind, McpAuthRequiredReason, McpServerStatus, type CustomizationEnablement } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
-import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { CustomizationMarketplaceConfiguration } from '../../../../../../platform/customizationMarketplace/common/customizationMarketplaceSources.js';
 import { ContributionEnablementState } from '../../../common/enablement.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
@@ -844,15 +843,6 @@ suite('mcpListWidget', () => {
 		});
 	});
 
-	test('unified MCP switches update the shared profile even when a harness has an old disabled scope', () => {
-		const server = createAgentHostServer({ isPluginProvided: true, isClientBundled: true, enabled: false, enablement: [{ kind: CustomizationEnablementKind.Session, enabled: false }] });
-		const { service: mcpService, calls } = createMcpService(ContributionEnablementState.DisabledProfile);
-		const { service: hostService, calls: hostCalls } = createAgentHostCustomizations();
-		setPrimaryMcpServerEnablement(mcpService, hostService, URI.parse('claude:/one'), 'shared', server, true, true);
-		setPrimaryMcpServerEnablement(mcpService, hostService, URI.parse('codex:/two'), 'shared', server, false, true);
-		assert.deepStrictEqual({ calls, hostCalls }, { calls: [['shared', ContributionEnablementState.EnabledProfile], ['shared', ContributionEnablementState.DisabledProfile]], hostCalls: [] });
-	});
-
 	test('uses host enablement for host-owned plugin MCP rows with local counterparts', () => {
 		const sessionResource = URI.parse('vscode-agent-session:///session-1');
 		const activeSessionServer = createAgentHostServer({
@@ -1473,7 +1463,6 @@ suite('mcpListWidget', () => {
 			};
 			Object.assign(widget, {
 				cardDisposables: store,
-				configurationService: new TestConfigurationService(),
 				cardListControllers: new Map<HTMLElement, CustomizationCardListController>(),
 				agentHostCustomizationService,
 				agentPluginService,

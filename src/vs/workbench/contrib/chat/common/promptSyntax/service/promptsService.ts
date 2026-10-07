@@ -121,7 +121,7 @@ export enum PromptsStorage {
 }
 
 export function isUserToggleableCustomization(type: PromptsType, storage: PromptsStorage): boolean {
-	return type === PromptsType.skill && (storage === PromptsStorage.builtIn || storage === PromptsStorage.user);
+	return type === PromptsType.skill && storage === PromptsStorage.builtIn;
 }
 
 /**

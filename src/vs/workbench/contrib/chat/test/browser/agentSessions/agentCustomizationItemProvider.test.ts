@@ -4,8 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { AgentHostUnifiedUserCustomizationsSettingId } from '../../../../../../platform/agentHost/common/agentService.js';
 import { VSBuffer } from '../../../../../../base/common/buffer.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
@@ -38,25 +36,6 @@ function makePromptsService(): IPromptsService {
 
 suite('AgentCustomizationItemProvider', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
-
-	test('shows the same editable user skills in every harness draft including disabled skills', async () => {
-		const uri = URI.file('/home/.agents/skills/shared/SKILL.md');
-		const config = new TestConfigurationService({ [AgentHostUnifiedUserCustomizationsSettingId]: true });
-		const prompts = upcastPartial<IPromptsService>({
-			...makePromptsService(),
-			getDisabledPromptFiles: () => new ResourceSet([uri]),
-			getDiscoveryInfo: async () => ({ type: PromptsType.skill, durationInMillis: 0, files: [{ status: 'loaded', promptPath: { uri, type: PromptsType.skill, storage: PromptsStorage.user, name: 'shared' } }] }),
-			getSourceFolders: async () => [{ uri: URI.file('/home/.agents/skills'), type: PromptsType.skill, storage: PromptsStorage.user }],
-		});
-		const provider = disposables.add(new AgentCustomizationItemProvider('local', undefined, undefined, upcastPartial<IFileService>({}), new NullLogService(), new NullAgentHostCustomizationService(), prompts, config));
-		const rows = await Promise.all(['claude', 'codex', 'copilot'].map(async harness => {
-			const resource = URI.parse(`agent-host-${harness}:///draft`);
-			const items = await provider.provideChatSessionCustomizations(resource, CancellationToken.None);
-			const folders = await provider.provideSourceFolders(resource, PromptsType.skill, CancellationToken.None);
-			return { items: items.map(item => ({ name: item.name, uri: item.uri.toString(), enabled: item.enabled, source: item.source })), folders: folders.map(folder => folder.uri.toString()) };
-		}));
-		assert.deepStrictEqual(rows, [0, 1, 2].map(() => ({ items: [{ name: 'shared', uri: uri.toString(), enabled: false, source: AICustomizationSources.user }], folders: ['file:///home/.agents/skills'] })));
-	});
 
 	test('surfaces draft bundle agents skills and instructions before session state exists', async () => {
 		const bundleUri = URI.from({ scheme: SYNCED_CUSTOMIZATION_SCHEME, path: '/bundle' });
@@ -94,7 +73,6 @@ suite('AgentCustomizationItemProvider', () => {
 			new NullLogService(),
 			new TestCustomizationService(),
 			makePromptsService(),
-			new TestConfigurationService(),
 		));
 		provider.setDraftCustomizations(observableValue<readonly ClientPluginCustomization[]>('draftCustomizations', [{
 			type: CustomizationType.Plugin,
@@ -149,7 +127,6 @@ suite('AgentCustomizationItemProvider', () => {
 			new NullLogService(),
 			new TestCustomizationService(),
 			makePromptsService(),
-			new TestConfigurationService(),
 		));
 
 		const items = await provider.provideChatSessionCustomizations(URI.parse('agent-host-codex:///session'), CancellationToken.None);
@@ -200,7 +177,6 @@ suite('AgentCustomizationItemProvider', () => {
 			new NullLogService(),
 			new TestCustomizationService(),
 			makePromptsService(),
-			new TestConfigurationService(),
 		));
 
 		const folders = await provider.provideSourceFolders(URI.parse('agent-host-copilotcli:///session'), PromptsType.instructions, CancellationToken.None);
@@ -250,7 +226,6 @@ suite('AgentCustomizationItemProvider', () => {
 			new NullLogService(),
 			new TestCustomizationService(),
 			makePromptsService(),
-			new TestConfigurationService(),
 		));
 
 		const items = await provider.provideChatSessionCustomizations(URI.parse('agent-host-codex:///session'), CancellationToken.None);
@@ -296,7 +271,6 @@ suite('AgentCustomizationItemProvider', () => {
 			new NullLogService(),
 			new NullAgentHostCustomizationService(),
 			promptsService,
-			new TestConfigurationService(),
 		));
 		provider.setDraftCustomizations(observableValue<readonly ClientPluginCustomization[]>('draftCustomizations', [{
 			type: CustomizationType.Plugin,
@@ -354,7 +328,6 @@ suite('AgentCustomizationItemProvider', () => {
 			new NullLogService(),
 			new TestCustomizationService(),
 			makePromptsService(),
-			new TestConfigurationService(),
 		));
 		const items = await provider.provideChatSessionCustomizations(URI.parse('agent-host-codex:///session'), CancellationToken.None);
 
@@ -395,7 +368,6 @@ suite('AgentCustomizationItemProvider', () => {
 			new NullLogService(),
 			new NullAgentHostCustomizationService(),
 			promptsService,
-			new TestConfigurationService(),
 		));
 		let changeCount = 0;
 		disposables.add(provider.onDidChange(() => changeCount++));

@@ -13,8 +13,6 @@ import { customizationId } from './state/sessionState.js';
  * customizations.
  */
 export const enum AgentHostConfigKey {
-	/** Use the connected VS Code client's user skills and MCP configuration. */
-	UnifiedUserCustomizations = 'unifiedUserCustomizations',
 	/** Host-owned Open Plugins available to remote sessions. */
 	Customizations = 'customizations',
 	/**
@@ -56,12 +54,6 @@ interface IPersistedCustomizationConfigEntry {
 }
 
 export const agentHostCustomizationConfigSchema = createSchema({
-	[AgentHostConfigKey.UnifiedUserCustomizations]: schemaProperty<boolean>({
-		type: 'boolean',
-		title: localize('agentHost.config.unifiedUserCustomizations.title', "Unified User Customizations"),
-		description: localize('agentHost.config.unifiedUserCustomizations.description', "Share VS Code's user skills and MCP configuration across agent harnesses while retaining each runtime's private MCP configuration."),
-		default: false,
-	}),
 	[AgentHostConfigKey.Customizations]: schemaProperty<IPersistedCustomizationConfigEntry[]>({
 		type: 'array',
 		title: localize('agentHost.config.customizations.title', "Plugins"),

@@ -1633,13 +1633,6 @@ suite('CopilotSessionLauncher resume config', () => {
 		return (launcher as unknown as { _buildSessionConfig(plan: unknown, runtime: unknown, onManagedSettingsResolved: () => void): Promise<{ model?: string; reasoningEffort?: string; contextTier?: string; availableTools?: string[]; excludedTools?: string[]; modelCapabilities?: Record<string, unknown>; toolSearch?: { enabled: boolean }; enableExperimentalMode?: boolean; featureFlags?: Record<string, boolean> }> })._buildSessionConfig(plan, runtime, () => { });
 	}
 
-	test('unifies user skills while retaining native MCP discovery', async () => {
-		const store = disposables.add(new DisposableStore());
-		const launcher = createLauncher(store, {});
-		const result = await buildResumeConfig(launcher, { id: 'gpt-5' }, { tools: [], plugins: [], mcpServers: {}, disabledUserSkills: ['native-only'] }) as ResumeSessionConfig;
-		assert.deepStrictEqual({ skills: result.disabledSkills, mcp: result.disabledMcpServers, discovery: result.enableConfigDiscovery }, { skills: ['native-only'], mcp: undefined, discovery: true });
-	});
-
 	test('enables experimental mode only with HydraFusion opt-in', async () => {
 		const store = disposables.add(new DisposableStore());
 		const enabled = await buildResumeConfig(createLauncher(store, { hydraFusion: true }), { id: 'hydrafusion' });

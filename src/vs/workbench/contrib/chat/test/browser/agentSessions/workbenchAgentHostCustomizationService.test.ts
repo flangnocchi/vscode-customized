@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Schemas } from '../../../../../../base/common/network.js';
@@ -124,7 +123,6 @@ suite('WorkbenchAgentHostCustomizationService', () => {
 				new NullLogService(),
 				service,
 				store.add(new MockPromptsService()),
-				new TestConfigurationService(),
 			));
 			const folders = await itemProvider.provideSourceFolders(session, PromptsType.skill, CancellationToken.None);
 			subscription.value = { workingDirectories: [snapshotRoot('/optimistic').toString(), snapshotRoot('/second workspace').toString()], customizations: [] } as unknown as SessionState;

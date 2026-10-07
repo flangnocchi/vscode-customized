@@ -29,13 +29,13 @@ import { ITelemetryService } from '../../../telemetry/common/telemetry.js';
 import { IAgentHostStartupPerformance } from '../agentHostStartupPerformance.js';
 import { createSchema, platformRootSchema, platformSessionSchema, schemaProperty, AgentHostAutoApprovePolicyRestrictedConfigKey, AgentHostCodexMultiRootEnabledConfigKey, AgentHostGitHubMcpServerEnabledConfigKey, AgentHostMcpServersConfigKey, AgentHostWorkspaceTrustConfigKey, type ISchemaProperty, type SessionMode } from '../../common/agentHostSchema.js';
 import { createPricingMetaFromBilling, normalizeCAPIBilling, type ICAPIModelBilling } from '../../common/agentModelPricing.js';
-import { ContextSizeConfigKey, createContextSizeConfigSchemaProperty, createContextSizeConfigSchemaPropertyFromLimits, createThinkingLevelConfigSchemaProperty, getModelContextSize } from '../../common/agentModelConfiguration.js';
+import { ContextSizeConfigKey, createContextSizeConfigSchemaProperty, createContextSizeConfigSchemaPropertyFromLimits, getModelContextSize } from '../../common/agentModelConfiguration.js';
 import { CHATGPT_SUBSCRIPTION_MODEL_SOURCE_ID, createAgentModelGroupMeta, createAgentModelSourceMeta } from '../../common/agentModelSource.js';
 import { AgentSystemNotificationKind, toAgentSystemNotificationMeta } from '../../common/meta/agentSystemNotificationMeta.js';
 import { AgentHostConfigKey, agentHostCustomizationConfigSchema } from '../../common/agentHostCustomizationConfig.js';
 import { AgentSdkSetupChannel } from '../agentSdkSetupChannel.js';
 import { CODEX_ACCOUNT_META_KEY, CODEX_ACCOUNT_SIGN_IN_REQUEST_KEY, CODEX_ACCOUNT_SIGN_OUT_REQUEST_KEY, type ICodexAccountInfo } from '../../common/codexAccount.js';
-import { getReasoningEffortDescription, getReasoningEffortLabel } from '../../common/reasoningEffort.js';
+import { getReasoningEffortDescription, getReasoningEffortLabel, resolveDefaultReasoningEffort } from '../../common/reasoningEffort.js';
 import { AgentChatMigrationDeferred, type AgentChatMigrationResult, AgentSession, AgentSignal, AgentWorkingDirectoryChangedError, CODEX_AGENT_PROVIDER_ID, IActiveClient, IAgent, IAgentChatConfigCompletionsParams, IAgentChatContext, IAgentChatDataChange, IAgentChatHistoryChange, IAgentChatMetadata, type IAgentChatMetadataOptions, IAgentChats, IAgentCreateChatForkSource, IAgentCreateChatResult, IAgentCreateChatOptions, IAgentDescriptor, IAgentDiscoveredChat, IAgentMaterializeChatEvent, IAgentModelInfo, type IAgentPrepareChatResult, IAgentResolveChatConfigParams, IAgentSpawnChatEvent, IMcpNotification, resolveAgentChatContext, resolveAgentHostInstructions, type AgentProvider, type AuthenticateParams } from '../../common/agent.js';
 import { AgentHostCodexAgentBinaryArgsEnvVar, AgentHostCodexAgentCodexHomeEnvVar, AgentHostCodexAgentSdkRootEnvVar } from '../../common/agentService.js';
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
@@ -159,7 +159,6 @@ import type { ItemGuardianApprovalReviewCompletedNotification } from './protocol
 import type { GuardianWarningNotification } from './protocol/generated/v2/GuardianWarningNotification.js';
 import type { ThreadApproveGuardianDeniedActionResponse } from './protocol/generated/v2/ThreadApproveGuardianDeniedActionResponse.js';
 import type { ConfigReadResponse } from './protocol/generated/v2/ConfigReadResponse.js';
-import { codexUnifiedUserCustomizationOverrides, type ICodexUnifiedUserCustomizationProjection } from './codexUnifiedUserCustomizations.js';
 import type { ConfigWriteResponse } from './protocol/generated/v2/ConfigWriteResponse.js';
 import { ensurePortableCodexProxyProvider } from './codexProviderConfiguration.js';
 import { reportCodexProviderSwitch } from './codexProviderSwitchTelemetry.js';
@@ -764,8 +763,6 @@ interface ICodexSession {
 	 * them up. `undefined` until materialized.
 	 */
 	materializedToolsSig: string | undefined;
-	/** Original shared MCP names mapped to collision-free SDK names for this thread. */
-	unifiedMcpServerAliases?: ReadonlyMap<string, string>;
 	/**
 	 * Signature of the `mcp_servers` (root config + client plugins) the codex
 	 * thread was started with. Codex only accepts `config.mcp_servers` at
@@ -1369,7 +1366,7 @@ export class CodexAgent extends Disposable implements IAgent {
 				affectedConfigurations.set(session.configurationResource.toString(), session.configurationResource);
 				const controller = session.mcpController;
 				if (controller) {
-					controller.applyAll(this._sdkMcpServersForSession(session));
+					controller.applyAll(inventoryToSdkServers(this._mcpInventory.forThread(session.threadId)));
 				}
 				session.materializedMcpSig = undefined;
 				if (session.firstTurnSent) {
@@ -1846,9 +1843,17 @@ export class CodexAgent extends Disposable implements IAgent {
 		contextWindow?: ICodexModelContextWindow,
 	): ConfigSchema | undefined {
 		const properties: ConfigSchema['properties'] = {};
-		const thinkingLevel = createThinkingLevelConfigSchemaProperty(supportedEfforts, declaredDefault, modelId);
-		if (thinkingLevel) {
-			properties[CODEX_THINKING_LEVEL_KEY] = thinkingLevel;
+		if (supportedEfforts?.length) {
+			const efforts = supportedEfforts.map(option => option.reasoningEffort);
+			properties[CODEX_THINKING_LEVEL_KEY] = {
+				type: 'string',
+				title: localize('codex.modelThinkingLevel.title', "Thinking Level"),
+				description: localize('codex.modelThinkingLevel.description', "Controls how much reasoning effort Codex uses."),
+				default: resolveDefaultReasoningEffort(efforts, declaredDefault, modelId),
+				enum: efforts,
+				enumLabels: efforts.map(getReasoningEffortLabel),
+				enumDescriptions: supportedEfforts.map(option => option.description || getReasoningEffortDescription(option.reasoningEffort) || ''),
+			};
 		}
 		const contextSize = contextWindow
 			? createContextSizeConfigSchemaPropertyFromLimits(contextWindow.defaultSize, contextWindow.maxSize)
@@ -2126,8 +2131,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			candidates,
 			childEnablement,
 			clientPlugins,
-			undefined,
-			this._usesUnifiedUserCustomizations(),
 		);
 		return { plugins, candidates, resolution };
 	}
@@ -2802,29 +2805,6 @@ export class CodexAgent extends Disposable implements IAgent {
 		return injectCodexMcpAuthTokens({ ...builtInGitHub, ...enabledConfiguredServers }, this._mcpAuthTokens);
 	}
 
-	private _usesUnifiedUserCustomizations(): boolean {
-		return this._configurationService.getRootValue(agentHostCustomizationConfigSchema, AgentHostConfigKey.UnifiedUserCustomizations) === true;
-	}
-
-	private _managedSessionMcpServers(session: ICodexSession | undefined): Record<string, ICodexMcpServerConfigJson> {
-		return {
-			...codexMcpServersFromConfig(this._configurationService.getRootValue(platformRootSchema, AgentHostMcpServersConfigKey)),
-			...codexMcpServersFromDefinitions(session ? this._sessionMcpDiscoveries.get(session.sessionId)?.discovery.definitions ?? [] : []),
-			...codexMcpServersFromPlugins(session?.clientCustomizations.plugins() ?? [], session?.workingDirectory, true),
-		};
-	}
-
-	private async _unifiedUserCustomizationOverrides(client: ICodexAppServerClient, cwd: string | undefined, mcpServers: Readonly<Record<string, ICodexMcpServerConfigJson>>, session?: ICodexSession): Promise<ICodexUnifiedUserCustomizationProjection> {
-		if (!this._usesUnifiedUserCustomizations()) {
-			return { overrides: {}, mcpServerAliases: new Map() };
-		}
-		const [config, skills] = await Promise.all([
-			client.request<'config/read', ConfigReadResponse>('config/read', { includeLayers: false, ...(cwd ? { cwd } : {}) }),
-			client.request<'skills/list', SkillsListResponse>('skills/list', { cwds: cwd ? [cwd] : [] }),
-		]);
-		return codexUnifiedUserCustomizationOverrides(config.config, skills, mcpServers, this._managedSessionMcpServers(session));
-	}
-
 	private _builtInGitHubMcpServer(session: ICodexSession, configuredServers: Record<string, ICodexMcpServerConfigJson>): Record<string, ICodexMcpServerConfigJson> {
 		if (session.agentMergeTurn
 			|| !this._githubMcpServerEnabled
@@ -2908,7 +2888,7 @@ export class CodexAgent extends Disposable implements IAgent {
 
 	private _mcpServerUrlForName(threadId: string, name: string): string | undefined {
 		const session = this._sessionForMcpThread(threadId);
-		return session ? this._buildSessionMcpServers(session)[this._displayMcpServerName(session, name)]?.url : undefined;
+		return session ? this._buildSessionMcpServers(session)[name]?.url : undefined;
 	}
 
 	private _sessionForMcpThread(threadId: string): ICodexSession | undefined {
@@ -5030,8 +5010,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			const resolvedModel = parseCodexModelSelection(model);
 			const sessionHookTrust = await this._buildSessionHookTrustState(conn.client, workingDirectory.fsPath);
 			this._applySessionHookTrustState(threadConfig, sessionHookTrust, workingDirectory.fsPath);
-			const unifiedCustomizations = await this._unifiedUserCustomizationOverrides(conn.client, workingDirectory.fsPath, mcpServers, scratch);
-			Object.assign(threadConfig, unifiedCustomizations.overrides);
 			this._assertCurrentConnection(conn);
 			const startResult = await conn.client.request<'thread/start', { thread: { id: string } }>('thread/start', {
 				cwd: workingDirectory.fsPath,
@@ -5050,7 +5028,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			// The freshly started thread is live and subscribed, so build a
 			// materialized (not resumed) entry keyed by the thread id.
 			const session = this._createResumedSessionEntry(threadId, threadId, workingDirectory, model, target, undefined, undefined, options?.agent);
-			session.unifiedMcpServerAliases = unifiedCustomizations.mcpServerAliases;
 			session.needsResume = !startedOnCurrentConnection;
 			session.firstTurnSent = false;
 			session.materializedEventFired = false;
@@ -5392,7 +5369,6 @@ export class CodexAgent extends Disposable implements IAgent {
 		}
 		let forkResult: ThreadForkResponse;
 		let forkConnection: IConnectionReady;
-		let forkCustomizations: ICodexUnifiedUserCustomizationProjection | undefined;
 		try {
 			// Directory preparation and source inspection above may outlive the
 			// app-server that resumed the source. Revalidate immediately before the
@@ -5412,8 +5388,6 @@ export class CodexAgent extends Disposable implements IAgent {
 				'features.image_generation': this._imageGenerationEnabledForModelProvider(resolvedModel?.modelProvider ?? sourceRead.thread.modelProvider),
 			};
 			this._applySessionHookTrustState(forkConfig, await this._buildSessionHookTrustState(forkConnection.client, forkCwd), forkCwd);
-			forkCustomizations = await this._unifiedUserCustomizationOverrides(forkConnection.client, forkCwd, sourceSession ? this._buildSessionMcpServers(sourceSession) : {}, sourceSession);
-			Object.assign(forkConfig, forkCustomizations.overrides);
 			this._assertCurrentConnection(forkConnection);
 			forkResult = await forkConnection.client.request<'thread/fork', ThreadForkResponse>('thread/fork', {
 				threadId: sourceThreadId,
@@ -5465,7 +5439,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			forkResult.thread.modelProvider ?? resolvedModel?.modelProvider ?? sourceRead.thread.modelProvider,
 		);
 		session.hasNativeHistory ||= hasNativeHistory;
-		session.unifiedMcpServerAliases = forkCustomizations?.mcpServerAliases;
 		session.managedWorkingDirectory = forkManagedWorkingDirectory;
 		this._sessions.set(sessionId, session);
 		this._sessionIdByThreadId.set(newThreadId, sessionId);
@@ -5656,9 +5629,6 @@ export class CodexAgent extends Disposable implements IAgent {
 			? pendingHookTrustState
 			: await this._buildSessionHookTrustState(conn.client, session.workingDirectory.fsPath);
 		this._applySessionHookTrustState(threadConfig, sessionHookTrust, session.workingDirectory.fsPath);
-		const unifiedCustomizations = await this._unifiedUserCustomizationOverrides(conn.client, session.workingDirectory.fsPath, mcpServers, session);
-		Object.assign(threadConfig, unifiedCustomizations.overrides);
-		session.unifiedMcpServerAliases = unifiedCustomizations.mcpServerAliases;
 		if (session.disposed || !session.chatChannel) {
 			return;
 		}
@@ -6820,9 +6790,7 @@ export class CodexAgent extends Disposable implements IAgent {
 				if (session.disposed) {
 					throw new CancellationError();
 				}
-				const unifiedCustomizations = await this._unifiedUserCustomizationOverrides(conn.client, session.workingDirectory?.fsPath, mcpServers, session);
-				session.unifiedMcpServerAliases = unifiedCustomizations.mcpServerAliases;
-				const baseResumeConfig = { ...customizationLaunch.config, ...this._modelContextConfigOverrides(session.model), ...unifiedCustomizations.overrides };
+				const baseResumeConfig = { ...customizationLaunch.config, ...this._modelContextConfigOverrides(session.model) };
 				let sessionHookTrust = await this._buildSessionHookTrustState(conn.client, session.workingDirectory?.fsPath);
 				const resumeWithHookTrust = async () => {
 					if (!this._isCurrentSessionHookTrustState(sessionHookTrust, session.workingDirectory?.fsPath)) {
@@ -6840,7 +6808,7 @@ export class CodexAgent extends Disposable implements IAgent {
 							...buildCodexResumeParams(
 								resolvedModel,
 								threadId,
-								this._usesUnifiedUserCustomizations() ? baseResumeConfig.mcp_servers as Record<string, JsonValue> : mcpServers,
+								mcpServers,
 								runtimeWorkspaceRoots,
 								{ ...resumeConfig, ...this._portableHistoryConfig(session.hasNativeHistory) },
 								customizationLaunch.developerInstructions,
@@ -7714,7 +7682,7 @@ export class CodexAgent extends Disposable implements IAgent {
 			const parsed = await parsePlugin(synced.pluginDir, this._fileService, session.workingDirectory, this._environmentService.userHome, synced.pluginDir);
 			const candidate = { ...synced.customization, children: parsedPluginChildren(parsed) };
 			const clientPlugins = input ? new Map([[input.uri, input]]) : undefined;
-			const resolution = resolveCustomizationEnablement(this._customizationEnablementService, session.configurationResource, [candidate], input?.childEnablement ? new Map([[input.uri, input.childEnablement]]) : undefined, clientPlugins, undefined, this._usesUnifiedUserCustomizations());
+			const resolution = resolveCustomizationEnablement(this._customizationEnablementService, session.configurationResource, [candidate], input?.childEnablement ? new Map([[input.uri, input.childEnablement]]) : undefined, clientPlugins);
 			const resolved = resolution.customizations[0];
 			return {
 				synced,
@@ -7818,7 +7786,7 @@ export class CodexAgent extends Disposable implements IAgent {
 			const catalogConnection = this._connection.kind === 'ready' ? this._connection : undefined;
 			const controller = this._getOrCreateMcpController(session);
 			if (controller) {
-				controller.applyAll(this._sdkMcpServersForSession(session));
+				controller.applyAll(inventoryToSdkServers(this._mcpInventory.forThread(session.threadId)));
 				this._refreshMcpCustomizationIds(session, controller);
 			}
 			const [workspaceAgents, workspaceInstructions, workspaceSkills, nativeSkillHookContainers] = await Promise.all([
@@ -7855,8 +7823,8 @@ export class CodexAgent extends Disposable implements IAgent {
 		const skills = await client.request<'skills/list', SkillsListResponse>('skills/list', {
 			cwds: this._workingDirectories(session).map(directory => directory.fsPath),
 		}).catch(err => { this._logService.warn(`[Codex] skills/list failed: ${err instanceof Error ? err.message : String(err)}`); return undefined; });
-		return skills && (session.managedWorkingDirectory || this._usesUnifiedUserCustomizations())
-			? { ...skills, data: skills.data.map(entry => ({ ...entry, skills: entry.skills.filter(skill => (!session.managedWorkingDirectory || skill.scope !== 'repo') && (!this._usesUnifiedUserCustomizations() || skill.scope !== 'user')) })) }
+		return session.managedWorkingDirectory && skills
+			? { ...skills, data: skills.data.map(entry => ({ ...entry, skills: entry.skills.filter(skill => skill.scope !== 'repo') })) }
 			: skills;
 	}
 
@@ -8016,7 +7984,7 @@ export class CodexAgent extends Disposable implements IAgent {
 		if (!session || !session.chatChannel || !isEqual(session.chatChannel, chat)) {
 			throw new Error(`Method not found: no active chat ${chat.toString()}`);
 		}
-		const entry = this._mcpInventory.forThread(session.threadId).get(this._sdkMcpServerName(session, serverName));
+		const entry = this._mcpInventory.forThread(session.threadId).get(serverName);
 		if (!entry) {
 			throw new Error(`Method not found: unknown MCP server '${serverName}'`);
 		}
@@ -8033,7 +8001,7 @@ export class CodexAgent extends Disposable implements IAgent {
 				const { threadId, connection: conn } = await this._ensureMaterializedThreadConnection(session);
 				return conn.client.request<'mcpServer/tool/call', McpServerToolCallResponse>('mcpServer/tool/call', {
 					threadId,
-					server: this._sdkMcpServerName(session, serverName),
+					server: serverName,
 					tool,
 					arguments: (params ? params['arguments'] : undefined) as JsonValue,
 				});
@@ -8046,7 +8014,7 @@ export class CodexAgent extends Disposable implements IAgent {
 				const { threadId, connection: conn } = await this._ensureMaterializedThreadConnection(session);
 				return conn.client.request<'mcpServer/resource/read', McpResourceReadResponse>('mcpServer/resource/read', {
 					threadId,
-					server: this._sdkMcpServerName(session, serverName),
+					server: serverName,
 					uri,
 				});
 			}
@@ -8088,7 +8056,7 @@ export class CodexAgent extends Disposable implements IAgent {
 		if (!controller) {
 			return undefined;
 		}
-		controller.applyAll(this._sdkMcpServersForSession(session));
+		controller.applyAll(inventoryToSdkServers(this._mcpInventory.forThread(session.threadId)));
 		this._refreshMcpCustomizationIds(session, controller);
 		return controller.serverNameForCustomizationId(id);
 	}
@@ -8164,7 +8132,7 @@ export class CodexAgent extends Disposable implements IAgent {
 			}
 		}
 		if (preferred?.mcpController) {
-			preferred.mcpController.applyAll(this._sdkMcpServersForSession(preferred), true);
+			preferred.mcpController.applyAll(inventoryToSdkServers(this._mcpInventory.forThread(preferred.threadId)), true);
 		}
 	}
 
@@ -8195,35 +8163,6 @@ export class CodexAgent extends Disposable implements IAgent {
 		return session.mcpController;
 	}
 
-	private _sdkMcpServersForSession(session: ICodexSession): ReturnType<typeof inventoryToSdkServers> {
-		const inventory = this._mcpInventory.forThread(session.threadId);
-		if (this._usesUnifiedUserCustomizations()) {
-			const allowed = this._buildSessionMcpServers(session);
-			const managed = this._managedSessionMcpServers(session);
-			return inventoryToSdkServers(new Map([...inventory].flatMap(([sdkName, entry]) => {
-				const name = this._displayMcpServerName(session, sdkName);
-				if (name !== sdkName ? !Object.hasOwn(allowed, name) : Object.hasOwn(managed, name)) {
-					return [];
-				}
-				return [[name, entry] as const];
-			})));
-		}
-		return inventoryToSdkServers(inventory);
-	}
-
-	private _sdkMcpServerName(session: ICodexSession, name: string): string {
-		return session.unifiedMcpServerAliases?.get(name) ?? name;
-	}
-
-	private _displayMcpServerName(session: ICodexSession, sdkName: string): string {
-		for (const [name, alias] of session.unifiedMcpServerAliases ?? []) {
-			if (alias === sdkName) {
-				return name;
-			}
-		}
-		return sdkName;
-	}
-
 	private _applyMcpInventoryToSession(session: ICodexSession): void {
 		if (session.disposed) {
 			return;
@@ -8232,7 +8171,7 @@ export class CodexAgent extends Disposable implements IAgent {
 		if (!controller) {
 			return;
 		}
-		controller.applyAll(this._sdkMcpServersForSession(session));
+		controller.applyAll(inventoryToSdkServers(this._mcpInventory.forThread(session.threadId)));
 		this._refreshMcpCustomizationIds(session, controller);
 	}
 
@@ -8253,7 +8192,7 @@ export class CodexAgent extends Disposable implements IAgent {
 		const ids = session.mapState.mcpCustomizationIds;
 		ids.clear();
 		for (const serverName of this._mcpInventory.forThread(session.threadId).keys()) {
-			const id = controller.customizationIdForServer(this._displayMcpServerName(session, serverName));
+			const id = controller.customizationIdForServer(serverName);
 			if (id !== undefined) {
 				ids.set(serverName, id);
 			}
@@ -8404,16 +8343,15 @@ export class CodexAgent extends Disposable implements IAgent {
 		if (!session) {
 			return;
 		}
-		const displayName = this._displayMcpServerName(session, name);
 		const configuredChildren = session.clientCustomizations.toCustomizations()
 			.flatMap(plugin => plugin.children ?? [])
-			.filter((child): child is McpServerCustomization => child.type === CustomizationType.McpServer && child.name === displayName);
+			.filter((child): child is McpServerCustomization => child.type === CustomizationType.McpServer && child.name === name);
 		if ((configuredChildren.length > 0 && configuredChildren.every(child => !isCustomizationEnabled(child)))
-			|| (configuredChildren.length === 0 && !this._isMcpServerEnabledForSdk(session, displayName))) {
+			|| (configuredChildren.length === 0 && !this._isMcpServerEnabledForSdk(session, name))) {
 			this._logService.info(`[Codex] Suppressed authentication request from disabled MCP server '${name}'`);
 			return;
 		}
-		let resource: ProtectedResourceMetadata = { resource: url, resource_name: displayName };
+		let resource: ProtectedResourceMetadata = { resource: url, resource_name: name };
 		let requiredScopes: string[] | undefined;
 		try {
 			const discovered = await raceTimeout(fetchResourceMetadata(url, undefined), 15_000);
@@ -8462,7 +8400,7 @@ export class CodexAgent extends Disposable implements IAgent {
 			if (threadId === null && session.threadId !== undefined && this._mcpInventory.hasThreadEntry(session.threadId, serverName)) {
 				continue;
 			}
-			const channel = session.mcpController?.channelForServer(this._displayMcpServerName(session, serverName));
+			const channel = session.mcpController?.channelForServer(serverName);
 			if (channel) {
 				this._onMcpNotification.fire({ channel, method: 'notifications/tools/list_changed' });
 			}

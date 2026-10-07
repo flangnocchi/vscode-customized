@@ -62,7 +62,6 @@ type ScenarioToolCallArguments = Record<string, any> | ((request: readonly any[]
 interface ScenarioToolCall {
 	toolNamePattern: RegExp;
 	arguments: ScenarioToolCallArguments;
-	namespace?: string;
 }
 
 /**
@@ -820,10 +819,7 @@ function handleRequest(req: import('http').IncomingMessage, res: import('http').
 	// a different SSE dialect than OpenAI Chat Completions, so dispatch to a
 	// dedicated handler that emits `message_start` / `content_block_*` events.
 	if (path === '/v1/messages' && req.method === 'POST') {
-		readBody().then((body: string) => {
-			serverEvents.emit('capturedRequest', { path, method: 'POST', body });
-			return handleMessagesApi(body, res);
-		});
+		readBody().then((body: string) => handleMessagesApi(body, res));
 		return;
 	}
 
@@ -1115,7 +1111,7 @@ async function handleResponsesApi(body: string, res: import('http').ServerRespon
 		// Responses API uses `input` array and `tools` array
 		input = parsed.input || [];
 		const tools = parsed.tools || [];
-		requestToolNames = tools.flatMap((t: any) => t.type === 'namespace' ? (t.tools ?? []).map((tool: any) => tool.name) : [t.name]).filter(Boolean);
+		requestToolNames = tools.map((t: any) => t.name).filter(Boolean);
 
 		// Search input items for scenario tags (input items have role + content)
 		for (let i = input.length - 1; i >= 0; i--) {
@@ -1224,7 +1220,6 @@ async function sendResponsesNonStreaming(
 					call_id: callId,
 					name: toolName,
 					arguments: argsJson,
-					...(call.namespace ? { namespace: call.namespace } : {}),
 				};
 			});
 			outputTokens = 1;
@@ -1397,7 +1392,6 @@ async function streamResponsesApiToolCalls(
 			call_id: callId,
 			name: toolName,
 			arguments: '',
-			...(call.namespace ? { namespace: call.namespace } : {}),
 		};
 
 		res.write(`event: response.output_item.added\ndata: ${JSON.stringify({

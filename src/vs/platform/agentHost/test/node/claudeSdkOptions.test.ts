@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { buildClaudeTelemetryEnv, buildModelEnumerationOptions, buildOptions, buildSubprocessEnv, toClaudeMcpServers } from '../../node/claude/claudeSdkOptions.js';
+import { buildClaudeTelemetryEnv, buildOptions, buildSubprocessEnv, toClaudeMcpServers } from '../../node/claude/claudeSdkOptions.js';
 import type { ClaudeTransport, IClaudeProxyHandle } from '../../node/claude/claudeProxyService.js';
 import { McpServerType } from '../../../mcp/common/mcpPlatformTypes.js';
 import { CustomizationType, McpServerStatus, type McpServerCustomization } from '../../common/state/protocol/state.js';
@@ -15,11 +15,6 @@ import type { IMcpServerDefinition } from '../../../agentPlugins/common/pluginPa
 suite('claudeSdkOptions / buildSubprocessEnv', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
-
-	test('managed model enumeration does not start native MCP or load user skills', () => {
-		const options = buildModelEnumerationOptions(true);
-		assert.deepStrictEqual({ strictMcpConfig: options.strictMcpConfig, mcpServers: options.mcpServers, skills: options.skills }, { strictMcpConfig: true, mcpServers: {}, skills: [] });
-	});
 
 	const SAVED_ENV = { ...process.env };
 	const KNOWN_KEYS = [
@@ -262,12 +257,6 @@ suite('claudeSdkOptions / buildOptions plugins projection', () => {
 			...(pluginUris !== undefined ? { plugins: pluginUris.map(uri => ({ uri, skipMcpDiscovery: true })) } : {}),
 		};
 	}
-
-	test('unified customizations retain native MCP, user instructions and hooks', async () => {
-		const managed = await buildOptions({ ...input(undefined), unifiedUserCustomizations: true }, proxyTransport, () => { });
-		const legacy = await buildOptions(input(undefined), proxyTransport, () => { });
-		assert.deepStrictEqual({ strict: managed.strictMcpConfig, sources: managed.settingSources, legacy: legacy.strictMcpConfig }, { strict: false, sources: ['user', 'project', 'local'], legacy: undefined });
-	});
 
 	test('non-empty plugins project without duplicate SDK MCP discovery', async () => {
 		const opts = await buildOptions(

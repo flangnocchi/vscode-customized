@@ -4,7 +4,6 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { TestConfigurationService } from '../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { Event } from '../../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../../base/common/lifecycle.js';
@@ -64,7 +63,7 @@ export async function assertCodexSkillItems(service: IAgentHostCustomizationServ
 			override readonly onDidChangeSkills = Event.None;
 			override getDisabledPromptFiles(): ResourceSet { return new ResourceSet(); }
 			override async listPromptFilesForStorage() { return []; }
-		}(), new TestConfigurationService(),
+		}(),
 	));
 	const items = await provider.provideChatSessionCustomizations(sessionResource, CancellationToken.None);
 

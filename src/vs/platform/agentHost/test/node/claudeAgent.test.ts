@@ -6927,7 +6927,6 @@ suite('ClaudeAgentSession (Phase 7 §3.2)', () => {
 		const fakeConfigService: IAgentConfigurationService = {
 			onDidRootConfigChange: Event.None,
 			onDidSessionConfigChange: Event.None,
-			getRootValue: () => false,
 			getSessionConfigValues: () => undefined,
 			onDidChangeWorkingDirectoryPending: workingDirectoryPendingChange.event,
 		} as unknown as IAgentConfigurationService;

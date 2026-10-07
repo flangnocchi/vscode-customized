@@ -7,7 +7,6 @@ import { SequencerByKey } from '../../../../../../../base/common/async.js';
 import { IStringDictionary } from '../../../../../../../base/common/collections.js';
 import { formatTokenCount } from '../../../../../../../base/common/numbers.js';
 import { localize } from '../../../../../../../nls.js';
-import { getReasoningEffortLabel } from '../../../../../../../platform/agentHost/common/reasoningEffort.js';
 import { getModelContextWindowTotal, ILanguageModelChatMetadataAndIdentifier, ILanguageModelConfigurationSchema, type IModelConfigurationAccess } from '../../../../common/languageModels.js';
 import { isAutoModel, isHydraFusionModel } from './modelPickerPresentation.js';
 
@@ -102,17 +101,10 @@ export function getModelConfigProperty(
 	}
 	const currentConfig = configurationAccess.getModelConfiguration(model.identifier) ?? {};
 	for (const [key, schema] of Object.entries(properties)) {
-		// Extension providers can advertise effort without a presentation group.
-		// Keep their configuration key so Local chat forwards it unchanged.
-		const isEffort = key === 'reasoningEffort' || key === 'thinkingLevel';
-		const propertyGroup = schema.group ?? (isEffort ? MODEL_CONFIG_GROUP_EFFORT : undefined);
-		if (propertyGroup !== group || !schema.enum?.length) {
+		if (schema.group !== group || !schema.enum?.length) {
 			continue;
 		}
-		const enumItemLabels = isEffort && !Array.isArray(schema.enumItemLabels) && schema.enum.every(value => typeof value === 'string')
-			? schema.enum.map(value => getReasoningEffortLabel(value))
-			: schema.enumItemLabels;
-		return { key, value: currentConfig[key] ?? schema.default, schema: { ...schema, group: propertyGroup, enumItemLabels } };
+		return { key, value: currentConfig[key] ?? schema.default, schema };
 	}
 	return undefined;
 }

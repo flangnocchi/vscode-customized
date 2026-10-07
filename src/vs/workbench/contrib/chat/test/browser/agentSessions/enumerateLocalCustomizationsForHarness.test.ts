@@ -46,26 +46,6 @@ suite('enumerateLocalCustomizationsForHarness', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('unifies deduplicated user skills and profile toggles without sharing built-in opt-outs', async () => {
-		const user = makePromptPath(URI.file('/home/.agents/skills/shared/SKILL.md'), PromptsType.skill, PromptsStorage.user);
-		const duplicate = makePromptPath(URI.file('/home/.claude/skills/shared/SKILL.md'), PromptsType.skill, PromptsStorage.user);
-		const builtin = makePromptPath(URI.file('/builtin/commit/SKILL.md'), PromptsType.skill, PromptsStorage.builtIn);
-		const userAgent = makePromptPath(URI.file('/home/agents/reviewer.agent.md'), PromptsType.agent, PromptsStorage.user);
-		const service = makePromptsService(new Map([
-			[`${PromptsType.skill}/${PromptsStorage.builtIn}`, [builtin]],
-			[`${PromptsType.agent}/${PromptsStorage.user}`, [userAgent]],
-		]), new Map([[PromptsType.skill, new ResourceSet([user.uri])]]));
-		service.getDiscoveryInfo = async () => ({ type: PromptsType.skill, durationInMillis: 0, files: [
-			{ status: 'loaded', promptPath: user },
-			{ status: 'skipped', skipReason: 'duplicate-name', duplicateOf: user.uri, promptPath: duplicate },
-		] });
-		const rows = await Promise.all(['agent-host-claude', 'agent-host-codex'].map(type => enumerateLocalCustomizationsForHarness(service, new FakeSyncProvider(new Set([builtin.uri.toString()])), type, CancellationToken.None, { unifiedUserCustomizations: true })));
-		assert.deepStrictEqual(rows.map(items => items.map(item => ({ uri: item.uri.toString(), disabled: item.disabled }))), [0, 1].map(() => [
-			{ uri: user.uri.toString(), disabled: true },
-			{ uri: builtin.uri.toString(), disabled: true },
-		]));
-	});
-
 	test('emits built-in skills with BUILTIN_STORAGE even when no other storage source has files', async () => {
 		const builtin = URI.file('/builtin/create-pr/SKILL.md');
 		const promptsService = makePromptsService(new Map([

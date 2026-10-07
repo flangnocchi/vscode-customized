@@ -143,19 +143,6 @@ function firstChildEnablement(customizations: readonly Customization[]): readonl
 }
 
 suite('CustomizationEnablementGate', () => {
-	test('unified client MCP decisions override old harness scopes and remain fail closed while pending', () => {
-		const service = new TestEnablementService();
-		const child = server();
-		const container = plugin([child]);
-		const session = URI.parse('claude:/session');
-		service.setEnablementFor(child.id, [{ kind: CustomizationEnablementKind.Session, enabled: false }]);
-		const enabled = new Map<string, Readonly<Record<string, readonly CustomizationEnablement[]>>>([[container.uri, { [child.name]: [{ kind: CustomizationEnablementKind.Global, enabled: true }] }]]);
-		const on = resolveCustomizationEnablement(service, session, [container], enabled, undefined, undefined, true);
-		const off = resolveCustomizationEnablement(service, session, [container], new Map([[container.uri, { [child.name]: [{ kind: CustomizationEnablementKind.Global, enabled: false }] }]]), undefined, undefined, true);
-		service.setPending('session');
-		const pending = resolveCustomizationEnablement(service, session, [container], enabled, undefined, undefined, true);
-		assert.deepStrictEqual({ on: getSdkMcpServerEnablement(on).get(child.id), off: getSdkMcpServerEnablement(off).get(child.id), pending: isCustomizationSdkEligible(pending, container) }, { on: true, off: false, pending: false });
-	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 

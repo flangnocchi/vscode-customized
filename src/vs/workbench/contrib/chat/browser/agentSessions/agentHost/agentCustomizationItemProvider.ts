@@ -18,9 +18,6 @@ import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { ICustomizationItem, ICustomizationItemAction, ICustomizationItemProvider, ICustomizationSourceFolder } from '../../../common/customizationHarnessService.js';
 import { SYNCED_CUSTOMIZATION_SCHEME } from '../../../../../services/agentHost/common/agentHostFileSystemService.js';
 import { IFileService } from '../../../../../../platform/files/common/files.js';
-import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
-import { AgentHostUnifiedUserCustomizationsSettingId } from '../../../../../../platform/agentHost/common/agentService.js';
-import { getUnifiedUserSkills } from './agentHostLocalCustomizations.js';
 import { toAgentHostUri } from '../../../../../../platform/agentHost/common/agentHostUri.js';
 import { readAgentCustomizationMeta } from '../../../../../../platform/agentHost/common/meta/agentCustomizationMeta.js';
 import { AICustomizationSource, AICustomizationSources } from '../../../common/aiCustomizationWorkspaceService.js';
@@ -59,7 +56,6 @@ export class AgentCustomizationItemProvider extends Disposable implements ICusto
 		@ILogService private readonly _logService: ILogService,
 		@IAgentHostCustomizationService private readonly _customAgentsService: IAgentHostCustomizationService,
 		@IPromptsService private readonly _promptsService: IPromptsService,
-		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super();
 		this._contentExpander = new AgentCustomizationContentExpander(this._fileService, this._logService);
@@ -204,14 +200,6 @@ export class AgentCustomizationItemProvider extends Disposable implements ICusto
 		const workingDirectories = this._customAgentsService.getWorkingDirectories(sessionResource);
 
 		const folders: ICustomizationSourceFolder[] = [];
-		const unifiedUserSkills = type === PromptsType.skill && this._configurationService.getValue<boolean>(AgentHostUnifiedUserCustomizationsSettingId) === true;
-		if (unifiedUserSkills) {
-			for (const folder of await this._promptsService.getSourceFolders(type)) {
-				if (folder.storage === PromptStorage.user) {
-					folders.push({ uri: folder.uri, label: folder.uri.fsPath, source: AICustomizationSources.user, destinationGroupId: folder.uri.toString() });
-				}
-			}
-		}
 		for (const customization of this._customAgentsService.getCustomizations(sessionResource)) {
 			if (!isDirectoryCustomization(customization) || !customization.writable) {
 				continue;
@@ -220,9 +208,6 @@ export class AgentCustomizationItemProvider extends Disposable implements ICusto
 				continue;
 			}
 			const source = isUnderAnyRoot(workingDirectories, customization.uri) ? AICustomizationSources.local : AICustomizationSources.user;
-			if (unifiedUserSkills && source === AICustomizationSources.user) {
-				continue;
-			}
 			folders.push({
 				uri: this.toRemoteUri(customization.uri),
 				label: customization.name,
@@ -354,28 +339,6 @@ export class AgentCustomizationItemProvider extends Disposable implements ICusto
 		}
 
 		const disabledBuiltinSkills = this._promptsService.getDisabledPromptFiles(PromptsType.skill);
-		if (this._configurationService.getValue<boolean>(AgentHostUnifiedUserCustomizationsSettingId) === true) {
-			// Use original URIs so the existing profile-wide skill toggle and editor
-			// control every harness, including drafts and disabled skills.
-			for (const [key, item] of items) {
-				if (item.type === PromptsType.skill && item.source === AICustomizationSources.user) {
-					items.delete(key);
-				}
-			}
-			for (const skill of await getUnifiedUserSkills(this._promptsService, token)) {
-				items.set(skill.uri.toString(), {
-					uri: skill.uri,
-					type: PromptsType.skill,
-					name: skill.name ?? basename(dirname(skill.uri)),
-					description: skill.description,
-					source: AICustomizationSources.user,
-					extensionId: undefined,
-					pluginUri: undefined,
-					enabled: !disabledBuiltinSkills.has(skill.uri),
-					userInvocable: skill.userInvocable !== false,
-				});
-			}
-		}
 		const builtinSkills = await this._promptsService.listPromptFilesForStorage(PromptsType.skill, PromptStorage.builtIn, token);
 		if (token.isCancellationRequested) {
 			return [];
