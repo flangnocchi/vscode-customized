@@ -13,7 +13,7 @@ import { TestConfigurationService } from '../../../../../../platform/configurati
 import { ConfigurationTarget, IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { TestInstantiationService } from '../../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IAgentHostEnablementService } from '../../../../../../platform/agentHost/common/agentHostEnablementService.js';
-import { AgentHostAllowSignedOutWhenUsableSettingId, IAgentHostService } from '../../../../../../platform/agentHost/common/agentService.js';
+import { AgentHostAllowSignedOutWhenUsableSettingId, AgentHostUnifiedUserCustomizationsSettingId, IAgentHostService } from '../../../../../../platform/agentHost/common/agentService.js';
 import { AgentHostConfigKey } from '../../../../../../platform/agentHost/common/agentHostCustomizationConfig.js';
 import { IAgentSubscription } from '../../../../../../platform/agentHost/common/state/agentSubscription.js';
 import type { ClientAnnotationsAction, INotification, IRootConfigChangedAction, SessionAction, TerminalAction } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
@@ -149,5 +149,22 @@ suite('AgentHostAllowSignedOutWhenUsableContribution', () => {
 		await flush();
 
 		assert.deepStrictEqual(agentHostService.dispatchedActions as readonly unknown[], []);
+	});
+
+	test('forwards shared user discovery opt-in and opt-out without forwarding any user paths', async () => {
+		const { agentHostService, configurationService } = setup(disposables, {
+			[AgentHostUnifiedUserCustomizationsSettingId]: true,
+		});
+		agentHostService.setRootState(makeRootStateWithSchema({
+			[AgentHostConfigKey.UnifiedUserCustomizations]: { type: 'boolean', title: 'Shared User Customizations' },
+		}));
+		await flush();
+		await configurationService.setUserConfiguration(AgentHostUnifiedUserCustomizationsSettingId, false);
+		fireConfigurationChange(configurationService, AgentHostUnifiedUserCustomizationsSettingId);
+		await flush();
+		assert.deepStrictEqual(agentHostService.dispatchedActions.map(action => (action.action as IRootConfigChangedAction).config), [
+			{ [AgentHostConfigKey.UnifiedUserCustomizations]: true },
+			{ [AgentHostConfigKey.UnifiedUserCustomizations]: false },
+		]);
 	});
 });

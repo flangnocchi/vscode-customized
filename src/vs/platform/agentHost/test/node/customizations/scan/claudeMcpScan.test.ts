@@ -59,4 +59,16 @@ suite('claudeMcpScan', () => {
 		const servers = await scanClaudeMcpServers(workspace, userHome, fileService);
 		assert.deepStrictEqual(servers.map(s => s.name), ['good']);
 	});
+
+	test('includes native user and local project MCP declarations with local before project before user precedence', async () => {
+		const native = await seed('/home/.claude.json', JSON.stringify({
+			mcpServers: { user: { command: 'u' }, conflict: { command: 'user' } },
+			projects: { [workspace.fsPath]: { mcpServers: { local: { command: 'l' }, conflict: { command: 'local' } } } },
+		}));
+		const project = await seed('/workspace/.mcp.json', JSON.stringify({ mcpServers: { project: { command: 'p' }, conflict: { command: 'project' } } }));
+		const servers = await scanClaudeMcpServers(workspace, userHome, fileService);
+		assert.deepStrictEqual(servers.map(server => [server.name, server.uri]), [['conflict', native.toString()], ['local', native.toString()], ['project', project.toString()], ['user', native.toString()]]);
+		const quick = await scanClaudeMcpServers(undefined, userHome, fileService);
+		assert.deepStrictEqual(quick.map(server => server.name), ['conflict', 'user']);
+	});
 });

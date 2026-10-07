@@ -5,11 +5,13 @@
 
 import type { McpServerConfig, OnElicitation, Options, PermissionMode, SDKUserMessage, SyncHookJSONOutput, WarmQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { createHash } from 'crypto';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Sequencer } from '../../../../base/common/async.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { isEqual } from '../../../../base/common/resources.js';
+import { basename, dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { INativeEnvironmentService } from '../../../environment/common/environment.js';
 import { IFileService } from '../../../files/common/files.js';
@@ -49,7 +51,10 @@ import { discoverClaudeMultiRootCustomizations } from './customizations/claudeMu
 import { resolvePromptToContentBlocks } from './claudePromptResolver.js';
 import type { ClaudeTransport } from './claudeProxyService.js';
 import { SessionMcpDiscovery } from '../shared/sessionMcpDiscovery.js';
-import { parsePlugin, type IMcpServerDefinition } from '../../../agentPlugins/common/pluginParsers.js';
+import { filterSharedUserCustomizations, SharedUserCustomizationDiscovery, type ISharedUserCustomization, type IPrivateCustomizationNames } from '../shared/sharedUserCustomizations.js';
+import { sharedUserInstructionText } from '../shared/sharedUserInstructions.js';
+import { scanClaudePluginNames } from './customizations/scan/claudeNativePluginScan.js';
+import { detectPluginFormat, parsePlugin, readPluginManifest, type IMcpServerDefinition } from '../../../agentPlugins/common/pluginParsers.js';
 import { hasClientPluginMcpDefaultCwds, readClientPluginMcpDefaultCwd } from '../../common/meta/clientPluginCustomizationMeta.js';
 import { ClaudeSdkPipeline, IRematerializer, type ISdkResolvedCustomizations } from './claudeSdkPipeline.js';
 import { SubagentRegistry } from './claudeSubagentRegistry.js';
@@ -154,6 +159,10 @@ function toClaudeMcpToolServerName(serverName: string): string {
  *     surfaced via `requestPermission` / `requestUserInput`.
  */
 export class ClaudeAgentSession extends Disposable {
+	private readonly _sharedUserCustomizations: SharedUserCustomizationDiscovery;
+	private _effectiveSharedUserPlugins: readonly ISharedUserCustomization[] = [];
+	private readonly _sharedPluginViews = new Map<string, URI>();
+	private _sharedProjectionRevision = 0;
 	private _hostInstructions: readonly string[] | undefined;
 
 	private _pipeline: ClaudeSdkPipeline | undefined;
@@ -466,6 +475,12 @@ export class ClaudeAgentSession extends Disposable {
 		super();
 		this._chatChannelUri = chatChannelUri;
 		this.project = project;
+		this._sharedUserCustomizations = this._register(this._instantiationService.createInstance(SharedUserCustomizationDiscovery, false));
+		this._register(this._sharedUserCustomizations.onDidChange(() => {
+			this._sharedProjectionRevision++;
+			this.markMcpConfigurationDirty();
+			this._onDidCustomizationsChange.fire();
+		}));
 		this._register(this._configurationService.onDidRootConfigChange(() => this.markMcpConfigurationDirty()));
 		this._register(this._authenticationService.onDidChangeAuthToken(event => {
 			if (event.resource === this._gitHubEndpointService.getCopilotResource().resource) {
@@ -513,7 +528,13 @@ export class ClaudeAgentSession extends Disposable {
 			this._fileService,
 			this._logService,
 		));
-		store.add(watcher.onDidChange(() => this._onDidCustomizationsChange.fire()));
+		store.add(watcher.onDidChange(() => {
+			this._sharedProjectionRevision++;
+			if (this._sharedUserCustomizations.plugins.length) {
+				this.markMcpConfigurationDirty();
+			}
+			this._onDidCustomizationsChange.fire();
+		}));
 		this._mcpDiscovery = directories?.length ? store.add(new SessionMcpDiscovery(directories, this._fileService)) : undefined;
 		if (this._mcpDiscovery) {
 			store.add(this._mcpDiscovery.onDidChange(() => {
@@ -625,11 +646,13 @@ export class ClaudeAgentSession extends Disposable {
 		this._materializedTransport = ctx.transport;
 
 		const permissionMode = resolveCurrentPermissionMode(this._configurationService, ctx.configResource, this._inheritedPermissionMode, this._permissionModeFallback);
+		await this._sharedUserCustomizations.whenSettled();
+		await this._refreshSharedUserPlugins();
 		const plugins = this._desiredClientPluginConfigs();
 		this.clientCustomizationsDiff.consume(plugins.map(plugin => plugin.uri));
 		const mcpLaunchEnablementRevision = this._mcpLaunchEnablementRevision;
 		const { mcpServers, deniedMcpServers, allowedTools, agentMergeRestrictedMcpServerNames } = await this._buildStartupToolWiring(ctx.resource, ctx.serverToolHost);
-		const agentName = await resolveClaudeAgentName(this._provisionalAgent, this._fileService, this._logService, this.sessionId);
+		const agentName = await this._resolveSharedAgentName();
 		const telemetry = await this._otelService.getNativeSdkTelemetryConfig();
 		const traceContext = this._otelService.getSessionTraceContext(this.sessionId, ctx.resource.toString());
 
@@ -649,6 +672,7 @@ export class ClaudeAgentSession extends Disposable {
 				deniedMcpServers,
 				allowedTools,
 				plugins,
+				sharedInstructions: await sharedUserInstructionText(this._desiredSharedUserPlugins().map(plugin => plugin.parsed), this._fileService),
 				agent: agentName,
 				telemetry,
 				traceContext,
@@ -743,11 +767,13 @@ export class ClaudeAgentSession extends Disposable {
 					throw new Error(`Cannot rebuild Claude session ${this.sessionId}: no transport resolved`);
 				}
 				this._watchCustomizations(this.workingDirectories);
+				await this._sharedUserCustomizations.whenSettled();
+				await this._refreshSharedUserPlugins();
 				const rebuildPlugins = this._desiredClientPluginConfigs();
 				this.clientCustomizationsDiff.consume(rebuildPlugins.map(plugin => plugin.uri));
 				const rebuildMcpLaunchEnablementRevision = this._mcpLaunchEnablementRevision;
 				const { mcpServers: rebuildMcp, deniedMcpServers: rebuildDeniedMcpServers, allowedTools: rebuildAllowedTools, agentMergeRestrictedMcpServerNames: rebuildAgentMergeRestrictedMcpServerNames } = await this._buildStartupToolWiring(ctx.resource, ctx.serverToolHost);
-				const rebuildAgentName = await resolveClaudeAgentName(this._provisionalAgent, this._fileService, this._logService, this.sessionId);
+				const rebuildAgentName = await this._resolveSharedAgentName();
 				const rebuildOptions = await buildOptions(
 					{
 						sessionId: this.sessionId,
@@ -764,6 +790,7 @@ export class ClaudeAgentSession extends Disposable {
 						deniedMcpServers: rebuildDeniedMcpServers,
 						allowedTools: rebuildAllowedTools,
 						plugins: rebuildPlugins,
+						sharedInstructions: await sharedUserInstructionText(this._desiredSharedUserPlugins().map(plugin => plugin.parsed), this._fileService),
 						agent: rebuildAgentName,
 						telemetry,
 						traceContext,
@@ -893,6 +920,21 @@ export class ClaudeAgentSession extends Disposable {
 			return { servers: {}, deniedServers: [], agentMergeRestrictedServerNames: new Set() };
 		}
 		const definitions = new Map<string, IMcpServerDefinition>();
+		const shared = this._effectiveSharedUserPlugins;
+		const sharedResolution = resolveCustomizationEnablement(this._customizationEnablementService, this._configurationResource, shared.map(plugin => plugin.customization));
+		const sharedMcpEnablement = getSdkMcpServerEnablement(sharedResolution);
+		const sharedDefinitionIds = new Set(shared.flatMap(plugin => plugin.parsed.mcpServers.map(definition => definition.customization.id)));
+		for (const [index, plugin] of shared.entries()) {
+			const customization = sharedResolution.customizations[index];
+			if (customization.type !== CustomizationType.Plugin || !isCustomizationSdkEligible(sharedResolution, customization) || !isCustomizationEnabled(customization)) {
+				continue;
+			}
+			for (const definition of plugin.parsed.mcpServers) {
+				if (sharedMcpEnablement.get(definition.customization.id) === true) {
+					definitions.set(definition.name, definition);
+				}
+			}
+		}
 		const nativeWorkspaceDefinitions: IMcpServerDefinition[] = [];
 		const discoveredDefinitions = await this._mcpDiscovery?.refresh() ?? [];
 		let hasGitHubMcpServer = gitHubMcpServerConfiguration
@@ -963,7 +1005,9 @@ export class ClaudeAgentSession extends Disposable {
 				deniedServers.push(toClaudeDeniedMcpServer(definition));
 			}
 		}
-		const converted = toClaudeMcpServers([...definitions.values()], primaryCwd);
+		const converted = toClaudeMcpServers([...definitions.values()].filter(definition => !sharedDefinitionIds.has(definition.customization.id)), primaryCwd);
+		const sharedConverted = toClaudeMcpServers([...definitions.values()].filter(definition => sharedDefinitionIds.has(definition.customization.id)), primaryCwd, true);
+		Object.assign(converted.servers, sharedConverted.servers);
 		for (const name of converted.skipped) {
 			this._logService.warn(`[Claude:${this.sessionId}] Skipping MCP server '${name}' because its stdio working directory cannot be represented by the Claude SDK`);
 		}
@@ -1057,6 +1101,9 @@ export class ClaudeAgentSession extends Disposable {
 	 */
 	async send(prompt: SDKUserMessage, turnId: string, resource: URI, workingDirectories?: readonly URI[], switchTransport?: ClaudeTransport, hostInstructions?: readonly string[], clientContext?: IAgentHostClientTelemetryContext, agentMergeTurn = false): Promise<void> {
 		const pipeline = this._requirePipeline();
+		if (!this._sharedUserCustomizations.isSettled) {
+			await this._sharedUserCustomizations.whenSettled();
+		}
 		if (workingDirectories) {
 			this._replaceDesiredWorkingDirectories(workingDirectories);
 		}
@@ -1068,6 +1115,9 @@ export class ClaudeAgentSession extends Disposable {
 		// New turn: reset the per-turn credit accumulator so proxy reports
 		// for this turn's `/v1/messages` calls sum from zero.
 		this._currentTurnNanoAiu = 0;
+		if (this._sharedUserCustomizations.plugins.length || this._effectiveSharedUserPlugins.length) {
+			await this._refreshSharedUserPlugins();
+		}
 		if (this.toolDiff.hasDifference
 			|| this.clientCustomizationsDiff.hasDifferenceFrom(this._desiredClientPluginPaths())
 			|| this._appliedMcpLaunchEnablementRevision !== this._mcpLaunchEnablementRevision
@@ -1501,6 +1551,8 @@ export class ClaudeAgentSession extends Disposable {
 	 * still returned, so a transient SDK hiccup doesn't blank the UI.
 	 */
 	async getSessionCustomizations(): Promise<readonly Customization[]> {
+		await this._sharedUserCustomizations.whenSettled();
+		await this._refreshSharedUserPlugins();
 		const { synced } = this.clientCustomizationsDiff.model.state.get();
 		const userHome = this._environmentService.userHome;
 		const [multiRoot, rules, mcpServers, hooks] = await Promise.all([
@@ -1527,7 +1579,18 @@ export class ClaudeAgentSession extends Disposable {
 		// `buildDiscoveredCustomizations` also folds in the read-only "Built-in"
 		// surfacing (curated pre-materialize, SDK-derived post-materialize) for
 		// both agents and skills, so the SDK-vs-curated decision lives in one place.
-		const discoveredCustomizations = buildDiscoveredCustomizations([...multiRoot.discovered, ...rules], mcpServers, hooks, multiRoot.nativePlugins, multiRoot.workingDirectories, userHome, sdk);
+		const shared = this._effectiveSharedUserPlugins;
+		const sharedUris = new Set(shared.map(plugin => plugin.customization.uri));
+		for (const uri of this._sharedPluginViews.values()) {
+			sharedUris.add(uri.toString());
+		}
+		// Local shared plugins are already published with editable source URIs.
+		// Include them in the SDK projection's name suppression so their agents,
+		// skills and MCP do not also appear as read-only built-in fallbacks.
+		const discoveredCustomizations = buildDiscoveredCustomizations([...multiRoot.discovered, ...rules], mcpServers, hooks, [
+			...multiRoot.nativePlugins,
+			...shared.map(plugin => ({ id: plugin.customization.id, root: this._sharedPluginViews.get(plugin.customization.uri) ?? plugin.pluginDir, parsed: plugin.parsed })),
+		], multiRoot.workingDirectories, userHome, sdk).filter(customization => !sharedUris.has(customization.uri));
 
 		// Final projection: the client-pushed tier first, then the discovered
 		// tier, with session MCP enablement applied to both.
@@ -1543,7 +1606,7 @@ export class ClaudeAgentSession extends Disposable {
 			const { enablement: _enablement, ...withoutEnablement } = item.customization;
 			return withoutEnablement;
 		});
-		result.push(...discoveredCustomizations);
+		result.push(...shared.map(plugin => plugin.customization), ...discoveredCustomizations);
 		// Cache for the MCP-contributor signal enrichment (see
 		// {@link _enrichSignalWithMcpContributor}).
 		const projected = applyMcpServerEnablement(result, state);
@@ -1606,14 +1669,100 @@ export class ClaudeAgentSession extends Disposable {
 	}
 
 	private _desiredClientPluginPaths(): readonly URI[] {
-		return this._desiredClientPlugins().flatMap(synced => synced.pluginDir ? [synced.pluginDir] : []);
+		return this._desiredClientPluginConfigs().map(plugin => plugin.uri);
 	}
 
 	private _desiredClientPluginConfigs(): readonly { readonly uri: URI; readonly skipMcpDiscovery: boolean }[] {
-		return this._desiredClientPlugins().flatMap(synced => synced.pluginDir ? [{
+		const plugins = this._desiredClientPlugins().flatMap(synced => synced.pluginDir ? [{
 			uri: synced.pluginDir,
 			skipMcpDiscovery: hasClientPluginMcpDefaultCwds(synced.customization),
 		}] : []);
+		const seen = new Set(plugins.map(plugin => plugin.uri.toString()));
+		for (const plugin of this._desiredSharedUserPlugins()) {
+			if (plugin.loose && !plugin.parsed.skills.length && !plugin.parsed.agents.length) {
+				continue;
+			}
+			const uri = this._sharedPluginViews.get(plugin.customization.uri) ?? plugin.pluginDir;
+			if (!seen.has(uri.toString())) {
+				seen.add(uri.toString());
+				plugins.push({ uri, skipMcpDiscovery: true });
+			}
+		}
+		return plugins;
+	}
+
+	private _desiredSharedUserPlugins(): readonly ISharedUserCustomization[] {
+		const plugins = this._effectiveSharedUserPlugins;
+		const resolved = resolveCustomizationEnablement(this._customizationEnablementService, this._configurationResource, plugins.map(plugin => plugin.customization));
+		return plugins.filter((_, index) => {
+			const customization = resolved.customizations[index];
+			return customization.type === CustomizationType.Plugin && isCustomizationSdkEligible(resolved, customization) && isCustomizationEnabled(customization);
+		});
+	}
+
+	private async _refreshSharedUserPlugins(): Promise<void> {
+		const shared = this._sharedUserCustomizations.plugins;
+		if (!shared.length) {
+			this._effectiveSharedUserPlugins = [];
+			this._sharedPluginViews.clear();
+			return;
+		}
+		const userHome = this._environmentService.userHome;
+		const [native, mcp, pluginNames, workspaceMcp] = await Promise.all([
+			discoverClaudeMultiRootCustomizations(this.workingDirectories, userHome, this._fileService, this._logService),
+			scanClaudeMcpServers(this.workingDirectory, userHome, this._fileService),
+			scanClaudePluginNames(this.workingDirectories ?? [], userHome, this._fileService),
+			this._mcpDiscovery?.refresh() ?? [],
+		]);
+		const clientChildren = this.getClientCustomizations().flatMap(plugin => plugin.customization.children ?? []);
+		const names: IPrivateCustomizationNames = {
+			skills: new Set([...native.discovered.filter(item => item.customization.type === CustomizationType.Skill).map(item => item.name), ...native.nativePlugins.flatMap(plugin => plugin.parsed.skills.map(skill => `${plugin.id.split('@')[0]}:${skill.name}`)), ...clientChildren.filter(child => child.type === CustomizationType.Skill).map(child => child.name)]),
+			agents: new Set([...native.discovered.filter(item => item.customization.type === CustomizationType.Agent).map(item => item.name), ...native.nativePlugins.flatMap(plugin => plugin.parsed.agents.map(agent => `${plugin.id.split('@')[0]}:${agent.name}`)), ...clientChildren.filter(child => child.type === CustomizationType.Agent).map(child => child.name)]),
+			mcpServers: new Set([...mcp.map(server => server.name), ...workspaceMcp.map(server => server.name), ...native.nativePlugins.flatMap(plugin => plugin.parsed.mcpServers.map(server => server.name)), ...clientChildren.filter(child => child.type === CustomizationType.McpServer).map(child => child.name)]),
+			plugins: new Set([...pluginNames, ...this.getClientCustomizations().map(plugin => plugin.customization.name)]),
+		};
+		this._effectiveSharedUserPlugins = filterSharedUserCustomizations(shared, names, true);
+		for (const plugin of this._effectiveSharedUserPlugins) {
+			const original = shared.find(candidate => candidate.customization.id === plugin.customization.id)!;
+			if (!plugin.loose) {
+				this._sharedPluginViews.delete(plugin.customization.uri);
+				continue;
+			}
+			// Claude reads plugin directories again. Materialize only the surviving
+			// loose skills/agents so the SDK cannot rediscover shadowed resources
+			// or load loose hooks from the shared root as a native plugin package.
+			// Source URIs above stay unchanged for editing and persistent identity.
+			const signature = createHash('sha256').update(JSON.stringify({ revision: this._sharedProjectionRevision, skills: plugin.parsed.skills.map(skill => skill.uri.toString()), agents: plugin.parsed.agents.map(agent => agent.uri.toString()) })).digest('hex');
+			const root = URI.joinPath(this._sessionDataService.getSessionDataDir(this._configurationResource), 'shared-user-customizations', signature, '.agents');
+			if (this._sharedPluginViews.get(plugin.customization.uri)?.toString() !== root.toString()) {
+				await this._fileService.createFolder(root);
+				const format = await detectPluginFormat(original.pluginDir, this._fileService);
+				const manifest = await readPluginManifest(original.pluginDir, format, this._fileService);
+				if (typeof manifest?.name === 'string') {
+					await this._fileService.writeFile(URI.joinPath(root, '.claude-plugin/plugin.json'), VSBuffer.fromString(JSON.stringify({ name: manifest.name })));
+				}
+				for (const skill of plugin.parsed.skills) {
+					await this._fileService.copy(dirname(skill.uri), URI.joinPath(root, 'skills', basename(dirname(skill.uri))), true);
+				}
+				for (const agent of plugin.parsed.agents) {
+					await this._fileService.copy(agent.uri, URI.joinPath(root, 'agents', basename(agent.uri)), true);
+				}
+				this._sharedPluginViews.set(plugin.customization.uri, root);
+			}
+		}
+	}
+
+	private async _resolveSharedAgentName(): Promise<string | undefined> {
+		const name = await resolveClaudeAgentName(this._provisionalAgent, this._fileService, this._logService, this.sessionId);
+		for (const plugin of this._desiredSharedUserPlugins()) {
+			if (plugin.parsed.agents.some(agent => agent.uri.toString() === this._provisionalAgent?.uri)) {
+				const format = await detectPluginFormat(plugin.pluginDir, this._fileService);
+				const manifest = await readPluginManifest(plugin.pluginDir, format, this._fileService);
+				const prefix = typeof manifest?.name === 'string' ? manifest.name : basename(plugin.pluginDir);
+				return `${prefix}:${name}`;
+			}
+		}
+		return name;
 	}
 
 	private _desiredClientPlugins(): readonly ISyncedCustomization[] {

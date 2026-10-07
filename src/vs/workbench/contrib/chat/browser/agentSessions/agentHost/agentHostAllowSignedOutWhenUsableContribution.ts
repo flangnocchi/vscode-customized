@@ -6,7 +6,7 @@
 import { Event } from '../../../../../../base/common/event.js';
 import { Disposable } from '../../../../../../base/common/lifecycle.js';
 import { autorun } from '../../../../../../base/common/observable.js';
-import { AgentHostAllowSignedOutWhenUsableSettingId, IAgentHostService } from '../../../../../../platform/agentHost/common/agentService.js';
+import { AgentHostAllowSignedOutWhenUsableSettingId, AgentHostUnifiedUserCustomizationsSettingId, IAgentHostService } from '../../../../../../platform/agentHost/common/agentService.js';
 import { AgentHostConfigKey } from '../../../../../../platform/agentHost/common/agentHostCustomizationConfig.js';
 import { IAgentHostEnablementService } from '../../../../../../platform/agentHost/common/agentHostEnablementService.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
@@ -14,15 +14,15 @@ import { IWorkbenchContribution } from '../../../../../../workbench/common/contr
 import { AgentHostRootConfigForwarder, type IForwardedRootConfigKey } from './agentHostRootConfigForwarder.js';
 
 /**
- * Forwards the `chat.agentHost.allowSignedOutWhenUsable` experimentation opt-in
- * into the **local** agent host's root config under the short key
- * {@link AgentHostConfigKey.AllowSignedOutWhenUsable}. This closes the two-reader
+ * Forwards signed-out availability and shared user customization opt-ins
+ * into the **local** agent host's root config under their short keys. This closes the two-reader
  * contract: the workbench reads the VS Code setting directly, while the node-side
  * Layer 1 gate reads the root-config bag (keyed only by short keys), so the flag
  * must be mirrored here or the node side would never see it. Gated on
  * Agent Host runtime availability. The schema-gate / hydration-retry / loop-guard
  * machinery lives in the shared {@link AgentHostRootConfigForwarder}; this
- * contribution only declares the key.
+ * contribution only declares the keys. Remote hosts own their configuration
+ * and discover their own user home rather than receiving local paths.
  */
 export class AgentHostAllowSignedOutWhenUsableContribution extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.agentHostAllowSignedOutWhenUsable';
@@ -37,6 +37,13 @@ export class AgentHostAllowSignedOutWhenUsableContribution extends Disposable im
 		super();
 
 		const keys: readonly IForwardedRootConfigKey[] = [
+			{
+				key: AgentHostConfigKey.UnifiedUserCustomizations,
+				computeValue: () => this._configurationService.getValue<boolean>(AgentHostUnifiedUserCustomizationsSettingId) === true,
+				registerTriggers: (store, push) => {
+					store.add(Event.filter(this._configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(AgentHostUnifiedUserCustomizationsSettingId), store)(() => push()));
+				},
+			},
 			{
 				key: AgentHostConfigKey.AllowSignedOutWhenUsable,
 				computeValue: () => this._configurationService.getValue<boolean>(AgentHostAllowSignedOutWhenUsableSettingId) === true,

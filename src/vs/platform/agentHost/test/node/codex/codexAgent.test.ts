@@ -57,6 +57,7 @@ interface ICodexMcpControllerHarness {
 		resolve(session: string, target: ICustomizationEnablementTarget): CustomizationEnablementResolution;
 	};
 	readonly _emitMcpCustomizationAction: (...args: readonly unknown[]) => void;
+	readonly _allClientPlugins: (session: ICodexMcpControllerSession) => readonly ICodexClientPlugin[];
 	readonly _preferredMcpPublisher: (configurationResource: URI) => ICodexMcpControllerSession | undefined;
 	readonly _switchMcpPublisher: (session: ICodexMcpControllerSession) => void;
 }
@@ -571,6 +572,7 @@ suite('CodexAgent', () => {
 				}),
 			},
 			_emitMcpCustomizationAction: () => { },
+			_allClientPlugins: session => session.clientCustomizations.plugins(),
 			_preferredMcpPublisher: () => session,
 			_switchMcpPublisher: () => { },
 		};

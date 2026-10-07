@@ -63,6 +63,13 @@ async function readEnabledPlugins(uri: URI, fileService: IFileService): Promise<
 	return result;
 }
 
+/** A native declaration reserves its plugin name even when disabled. */
+export async function scanClaudePluginNames(workingDirectories: readonly URI[], userHome: URI, fileService: IFileService): Promise<ReadonlySet<string>> {
+	const files = new ResourceSet([URI.joinPath(userHome, '.claude', 'settings.json'), ...workingDirectories.flatMap(root => claudeSettingsFilesByPrecedence(root, userHome))]);
+	const entries = await Promise.all([...files].map(uri => readEnabledPlugins(uri, fileService)));
+	return new Set(entries.flatMap(entry => [...entry.keys()].map(id => id.split('@')[0])));
+}
+
 /**
  * Computes the effective set of enabled plugin ids across the settings
  * scopes. A plugin's value may be `true`, a `string[]` (version

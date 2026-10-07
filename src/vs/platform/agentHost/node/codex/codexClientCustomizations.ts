@@ -8,12 +8,13 @@ import { URI } from '../../../../base/common/uri.js';
 import { parseFrontMatter } from '../../../../base/common/yaml.js';
 import { SYNCED_CUSTOMIZATION_SCHEME } from '../../common/agentHostFileSystemService.js';
 import { IFileService } from '../../../files/common/files.js';
-import { parseRuleFile, resolveAgentDisableModelInvocation, type IMcpServerDefinition, type IParsedAgent, type IParsedPlugin } from '../../../agentPlugins/common/pluginParsers.js';
+import { resolveAgentDisableModelInvocation, type IMcpServerDefinition, type IParsedAgent, type IParsedPlugin } from '../../../agentPlugins/common/pluginParsers.js';
 import type { ISyncedCustomization } from '../../common/agentPluginManager.js';
 import { CustomizationEnablementKind, type AgentSelection } from '../../common/state/protocol/state.js';
 import { CustomizationType, type ChildCustomization, type ClientPluginCustomization, type McpServerCustomization, type PluginCustomization } from '../../common/state/sessionState.js';
 import { readClientPluginMcpDefaultCwd } from '../../common/meta/clientPluginCustomizationMeta.js';
 import { isCustomizationEnabled } from '../../common/customizationEnablement.js';
+import { sharedUserInstructionText } from '../shared/sharedUserInstructions.js';
 import { AGENT_HOST_FILE_LINK_INSTRUCTIONS } from '../shared/fileLinkInstructions.js';
 import { toCodexMcpServerJson, type ICodexMcpServerConfigJson } from './codexMcpServers.js';
 
@@ -274,22 +275,8 @@ export async function codexCustomizationConfig(
 			const match = selectedAgentUri ? matchSelectedAgent(plugin, agent.uri, selectedAgentUri) : SelectedAgentMatch.None;
 			await addAgent(agent, match);
 		}
-
-		for (const instruction of plugin.parsed?.instructions ?? []) {
-			try {
-				const rule = await parseRuleFile(instruction.uri, fileService);
-				if (!isAlwaysOnRule(rule.globs, rule.alwaysApply)) {
-					continue;
-				}
-				const content = (await fileService.readFile(instruction.uri)).value.toString();
-				const frontmatter = parseFrontMatter(content);
-				const body = frontmatter?.body ?? content;
-				if (body.trim()) {
-					pluginInstructions.push(body.trim());
-				}
-			} catch { }
-		}
 	}
+	pluginInstructions.push(await sharedUserInstructionText(plugins.flatMap(plugin => plugin.parsed ? [plugin.parsed] : []), fileService));
 
 	const developerInstructions = [
 		...pluginInstructions,
@@ -301,13 +288,6 @@ export async function codexCustomizationConfig(
 		agentRoles: [...agentRoles.values()],
 		developerInstructions,
 	};
-}
-
-function isAlwaysOnRule(globs: readonly string[] | undefined, alwaysApply: boolean | undefined): boolean {
-	if (!globs?.length) {
-		return alwaysApply !== false;
-	}
-	return globs.some(glob => glob.trim() === '**' || glob.trim() === '**/*');
 }
 
 const enum SelectedAgentMatch {

@@ -86,6 +86,8 @@ export interface IBuildOptionsInput {
 	 * {@link SessionClientCustomizationsDiff.consume}.
 	 */
 	readonly plugins?: readonly { readonly uri: URI; readonly skipMcpDiscovery: boolean }[];
+	/** Fixed shared rules appended to the native session prompt, rather than each user turn. */
+	readonly sharedInstructions?: string;
 	/**
 	 * Resolved SDK agent name (matches a key in `Options.agents`, or an
 	 * agent loaded from `~/.claude/agents/**`). Projected onto
@@ -204,7 +206,7 @@ export async function buildOptions(
 				? { deniedMcpServers: [...input.deniedMcpServers] }
 				: {}),
 		},
-		systemPrompt: { type: 'preset', preset: 'claude_code' },
+		systemPrompt: { type: 'preset', preset: 'claude_code', ...(input.sharedInstructions ? { append: input.sharedInstructions } : {}) },
 		...(Object.keys(hooks).length > 0 ? { hooks } : {}),
 		stderr: logStderr,
 	};
@@ -233,9 +235,21 @@ export async function buildClientMcpServers(
 	return { client: server };
 }
 
+// Claude's stdio MCP options do not carry cwd. Use argv-based spawning for
+// shared definitions that need it; neither command nor arguments go through a shell.
+const CLAUDE_MCP_WORKING_DIRECTORY_WRAPPER = [
+	'const { spawn } = require(\'node:child_process\');',
+	'const config = JSON.parse(process.argv[1]);',
+	'const child = spawn(config.command, config.args, { cwd: config.cwd, stdio: \'inherit\', shell: false });',
+	'child.on(\'error\', error => { process.stderr.write(error.message + \'\\n\'); process.exit(1); });',
+	'child.on(\'exit\', (code, signal) => process.exit(code ?? (signal === \'SIGINT\' ? 130 : signal === \'SIGHUP\' ? 129 : 143)));',
+	'for (const signal of [\'SIGTERM\', \'SIGINT\', \'SIGHUP\']) { process.on(signal, () => child.kill(signal)); }',
+].join('\n');
+
 export function toClaudeMcpServers(
 	definitions: readonly IMcpServerDefinition[],
 	primaryCwd: URI,
+	allowWorkingDirectoryWrapper = false,
 ): { readonly servers: Record<string, McpServerConfig>; readonly skipped: readonly string[] } {
 	const servers: Record<string, McpServerConfig> = {};
 	const skipped: string[] = [];
@@ -252,16 +266,19 @@ export function toClaudeMcpServers(
 
 		const effectiveCwd = resolveMcpServerWorkingDirectory(config.cwd, definition.defaultCwd ?? primaryCwd);
 		const hasRepresentableCwd = effectiveCwd !== undefined && isEqual(URI.file(normalize(effectiveCwd)), URI.file(normalize(primaryCwd.fsPath)));
-		if (!hasRepresentableCwd) {
+		if (!hasRepresentableCwd && (!allowWorkingDirectoryWrapper || !effectiveCwd)) {
 			skipped.push(definition.name);
 			continue;
 		}
+		const env: Record<string, string | number | null> = { ...config.env, ...(!hasRepresentableCwd ? { ELECTRON_RUN_AS_NODE: '1' } : {}) };
 		servers[definition.name] = {
 			type: 'stdio',
-			command: config.command,
-			...(config.args ? { args: [...config.args] } : {}),
-			...(config.env ? {
-				env: Object.fromEntries(Object.entries(config.env)
+			command: hasRepresentableCwd ? config.command : process.execPath,
+			...(!hasRepresentableCwd ? {
+				args: ['-e', CLAUDE_MCP_WORKING_DIRECTORY_WRAPPER, JSON.stringify({ command: config.command, args: config.args ?? [], cwd: effectiveCwd })],
+			} : config.args ? { args: [...config.args] } : {}),
+			...(config.env || !hasRepresentableCwd ? {
+				env: Object.fromEntries(Object.entries(env)
 					.filter((entry): entry is [string, string | number] => entry[1] !== null)
 					.map(([key, value]) => [key, String(value)]))
 			} : {}),

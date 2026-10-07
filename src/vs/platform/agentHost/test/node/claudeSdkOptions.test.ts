@@ -4,6 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { execFile } from 'child_process';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../base/common/path.js';
+import { promisify } from 'util';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { buildClaudeTelemetryEnv, buildOptions, buildSubprocessEnv, toClaudeMcpServers } from '../../node/claude/claudeSdkOptions.js';
@@ -229,6 +234,30 @@ suite('claudeSdkOptions / MCP server projection', () => {
 		assert.deepStrictEqual(Object.keys(result.servers), ['primary', 'remote-primary', 'relative-primary', 'normalized-primary', 'remote', 'sse']);
 		assert.strictEqual(result.servers.sse.type, 'sse');
 		assert.deepStrictEqual(result.skipped, ['additional']);
+	});
+
+	test('shared stdio cwd wrapper preserves working directory, environment, and literal arguments', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'claude-shared-mcp-'));
+		try {
+			const args = ['two words', '$(echo not-a-shell)', '`echo not-a-shell`'];
+			const result = toClaudeMcpServers([{
+				...definition('shared', URI.file(directory)),
+				configuration: {
+					type: McpServerType.LOCAL,
+					command: process.execPath,
+					args: ['-e', 'process.stdout.write(JSON.stringify({cwd:process.cwd(),args:process.argv.slice(1),env:process.env.SHARED_MCP_TEST}))', ...args],
+					env: { SHARED_MCP_TEST: 'literal value', OMITTED: null },
+				},
+			}], URI.file('/different-primary'), true);
+			const server = result.servers.shared;
+			assert.ok(server.type === 'stdio' || server.type === undefined);
+			const output = await promisify(execFile)(server.command, server.args ?? [], { env: { ...process.env, ...server.env }, timeout: 5000 });
+			assert.deepStrictEqual(JSON.parse(output.stdout), { cwd: await fs.realpath(directory), args, env: 'literal value' });
+			assert.deepStrictEqual(result.skipped, []);
+			assert.strictEqual(server.env?.OMITTED, undefined);
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
 	});
 });
 

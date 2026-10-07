@@ -15,6 +15,8 @@ import { customizationId } from './state/sessionState.js';
 export const enum AgentHostConfigKey {
 	/** Host-owned Open Plugins available to remote sessions. */
 	Customizations = 'customizations',
+	/** Opt-in compatibility loading from this host's ~/.agents; native discovery remains enabled. */
+	UnifiedUserCustomizations = 'unifiedUserCustomizations',
 	/**
 	 * Absolute path to the shell executable for host-managed terminals.
 	 * TODO: revisit magic key in config; refine into a dedicated typed channel. https://github.com/microsoft/vscode/issues/313812
@@ -54,6 +56,12 @@ interface IPersistedCustomizationConfigEntry {
 }
 
 export const agentHostCustomizationConfigSchema = createSchema({
+	[AgentHostConfigKey.UnifiedUserCustomizations]: schemaProperty<boolean>({
+		type: 'boolean',
+		title: localize('agentHost.config.unifiedUserCustomizations.title', "Shared User Customizations"),
+		description: localize('agentHost.config.unifiedUserCustomizations.description', "Load shared skills, agents, instructions, MCP servers and plugins from this host's ~/.agents directory when the provider does not discover them natively. Provider-native and project configuration remain enabled."),
+		default: false,
+	}),
 	[AgentHostConfigKey.Customizations]: schemaProperty<IPersistedCustomizationConfigEntry[]>({
 		type: 'array',
 		title: localize('agentHost.config.customizations.title', "Plugins"),

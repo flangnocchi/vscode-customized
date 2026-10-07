@@ -41,6 +41,7 @@ import { createArtifactServerToolGroup } from '../../../node/shared/artifactServ
 import { sessionServerToolDefinitions } from '../../../node/shared/sessionServerTools.js';
 import { AgentConfigurationService, IAgentConfigurationService } from '../../../node/agentConfigurationService.js';
 import { AgentHostWorkspaceTrustConfigKey } from '../../../common/agentHostSchema.js';
+import { AgentHostConfigKey } from '../../../common/agentHostCustomizationConfig.js';
 import { IAgentHostWorktreeIsolation, NullAgentHostWorktreeIsolation } from '../../../node/shared/worktreeIsolation.js';
 import { IAgentHostCustomizationEnablementService } from '../../../node/agentHostCustomizationEnablementService.js';
 import { AgentHostStateManager, IAgentHostStateManager } from '../../../node/agentHostStateManager.js';
@@ -70,6 +71,7 @@ interface ITestWireRequest {
 		readonly threadId?: string;
 		readonly model?: string;
 		readonly modelProvider?: string;
+		readonly developerInstructions?: string;
 		readonly config?: Readonly<Record<string, JsonValue>>;
 		readonly includeTurns?: boolean;
 		readonly numTurns?: number;
@@ -90,14 +92,16 @@ interface ITestPeer {
 	dispose(): void;
 }
 
-function createTestPeer(): ITestPeer {
+function createTestPeer(nativeConfig: Record<string, unknown> = {}, skillData: object[] = []): ITestPeer {
 	const stdin = new PassThrough();
 	const stdout = new PassThrough();
 	const outbound = new PassThrough();
 	stdin.on('data', (chunk: Buffer) => {
 		const request = JSON.parse(chunk.toString('utf8')) as ITestWireRequest;
 		if (request.method === 'skills/list') {
-			stdout.write(JSON.stringify({ id: request.id, result: { data: [] } }) + '\n');
+			stdout.write(JSON.stringify({ id: request.id, result: { data: skillData } }) + '\n');
+		} else if (request.method === 'config/read') {
+			stdout.write(JSON.stringify({ id: request.id, result: { config: nativeConfig, origins: {}, layers: null } }) + '\n');
 		} else {
 			outbound.write(chunk);
 		}
@@ -447,6 +451,68 @@ suite('CodexAgent createChat', () => {
 			agentHostCapabilities: { workspaceConversion: true },
 		});
 	});
+
+	for (const [workspaceless, privateConflict] of [[false, false], [true, false], [false, true], [true, true]]) {
+		test(`shared user customizations reach Codex thread start with native precedence (${workspaceless ? 'quick chat' : 'project'}${privateConflict ? ', private conflicts' : ''})`, async () => {
+			const agent = await createAgent(disposables, { sdkResolvableWithoutDownload: true });
+			const privateSkill = '/tmp/.codex/skills/native/SKILL.md';
+			const sharedSkill = '/tmp/.agents/skills/native/SKILL.md';
+			const peer = disposables.add(createTestPeer(privateConflict ? {
+				agents: { researcher: { description: 'Private researcher', config_file: '/private/researcher.toml' } },
+				mcp_servers: { shared: { url: 'https://private.example/mcp', enabled: false } },
+				plugins: { 'sample@private': { enabled: false } },
+				skills: { config: [{ path: privateSkill, enabled: false }] },
+			} : { developer_instructions: 'Private inline developer instruction.' }, privateConflict ? [{ cwd: '/tmp', skills: [
+				{ name: 'native', description: 'Private', scope: 'user', path: privateSkill, enabled: false },
+				{ name: 'native', description: 'Shared', scope: 'user', path: sharedSkill, enabled: true },
+			], errors: [] }] : []));
+			connectPeer(agent, peer);
+			const root = URI.file('/tmp/.agents');
+			await agent['_fileService'].writeFile(URI.joinPath(root, 'agents/research.agent.md'), VSBuffer.fromString('---\nname: researcher\ndescription: Shared researcher\n---\nShared instructions.'));
+			await agent['_fileService'].writeFile(URI.joinPath(root, 'skills/native/SKILL.md'), VSBuffer.fromString('---\nname: native\ndescription: Native skill\n---\nInstructions.'));
+			await agent['_fileService'].writeFile(URI.joinPath(root, 'mcp.json'), VSBuffer.fromString('{"mcpServers":{"shared":{"command":"shared-command"}}}'));
+			if (!privateConflict) {
+				await agent['_fileService'].writeFile(URI.joinPath(root, 'instructions/common.instructions.md'), VSBuffer.fromString('Shared always-on instruction.'));
+			}
+			if (privateConflict) {
+				await agent['_fileService'].writeFile(URI.joinPath(root, 'plugins/sample/.claude-plugin/plugin.json'), VSBuffer.fromString('{"name":"sample"}'));
+				await agent['_fileService'].writeFile(URI.joinPath(root, 'plugins/sample/skills/image/SKILL.md'), VSBuffer.fromString('---\nname: image\ndescription: Shared packaged skill\n---\nInstructions.'));
+			}
+			agent['_configurationService'].updateRootConfig({ [AgentHostConfigKey.UnifiedUserCustomizations]: true });
+			const session = AgentSession.uri('codex', `shared-${workspaceless}`);
+			const chat = URI.parse(buildDefaultChatUri(session));
+			await createSessionBackedChat(agent, chat, { configurationResource: session, resource: chat }, {
+				...(workspaceless ? {} : { workingDirectories: [URI.file('/workspace')] }),
+				model: { id: COPILOT_TEST_MODEL },
+			});
+			const entry = agent['_sessions'].get(AgentSession.id(session))!;
+			const materializing = workspaceless ? agent['_materialize'](entry, session) : entry.materializePromise;
+			const start = await readNextRequest(peer.outbound);
+			peer.push({ id: start.id, result: { thread: { id: `shared-thread-${workspaceless}`, cwd: start.params.cwd } } });
+			await materializing;
+			assert.strictEqual(start.method, 'thread/start');
+			assert.deepStrictEqual(Object.keys(start.params.config?.agents as object ?? {}), privateConflict ? [] : ['researcher']);
+			const servers = (start.params.config?.mcp_servers ?? {}) as Record<string, { command?: string }>;
+			assert.strictEqual(Object.keys(servers).filter(name => name.startsWith('agents_shared_')).length, privateConflict ? 0 : 1);
+			assert.strictEqual(Object.values(servers).some(server => server.command === 'shared-command'), !privateConflict);
+			assert.strictEqual(servers.shared, undefined, 'native MCP table is not overlaid');
+			if (privateConflict) {
+				assert.deepStrictEqual(start.params.config?.skills, { config: [{ path: privateSkill, enabled: false }, { path: sharedSkill, enabled: false }] });
+				assert.strictEqual((await agent['_buildCustomizationLaunch'](entry)).clientSkillInstructions.includes('Shared packaged skill'), false);
+				assert.strictEqual(agent['_allClientPlugins'](entry).length, 0, 'disabled private resources still reserve their names');
+			} else {
+				assert.strictEqual(start.params.config?.skills, undefined, 'nonconflicting native user skills keep their native settings');
+				assert.ok(start.params.developerInstructions?.includes('Shared always-on instruction.'));
+				assert.ok(start.params.developerInstructions?.includes('Private inline developer instruction.'));
+			}
+
+			agent['_configurationService'].updateRootConfig({ [AgentHostConfigKey.UnifiedUserCustomizations]: false });
+			const next = await agent['_buildCustomizationLaunch'](entry);
+			assert.strictEqual(next.config.agents, undefined, 'shared roles are removed from the next launch');
+			assert.strictEqual(next.developerInstructions?.includes('Shared always-on instruction.'), false);
+			assert.strictEqual(Object.values(agent['_buildSessionMcpServers'](entry)).some(server => server.command === 'shared-command'), false);
+		});
+	}
 
 	test('setWorkingDirectory updates the live Codex thread and persisted session root', async () => {
 		const sessionStore = createTestSessionStore();

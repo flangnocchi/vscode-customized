@@ -76,6 +76,9 @@ export const enum AgentHostIpcChannels {
 /** Configuration key that controls whether AHP JSONL logs are written for agent host transports. */
 export const AgentHostAhpJsonlLoggingSettingId = 'chat.agentHost.ahpJsonlLoggingEnabled';
 
+/** Supplement provider-native discovery with shared resources from the host's ~/.agents. */
+export const AgentHostUnifiedUserCustomizationsSettingId = 'chat.agentHost.unifiedUserCustomizations';
+
 export type AgentHostDebugLogsArtifactKind = 'archive' | 'directory';
 /** Maximum number of files in one Agent Host debug-log artifact. */
 export const AGENT_HOST_DEBUG_LOGS_MAX_ENTRIES = 1000;

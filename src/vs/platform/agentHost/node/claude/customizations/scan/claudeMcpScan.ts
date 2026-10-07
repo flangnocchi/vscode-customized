@@ -12,13 +12,17 @@ import { McpServerStatus, type McpServerCustomization, type McpServerState } fro
  * The JSON files a Claude session reads MCP server declarations from,
  * in precedence order (project before user — first-seen wins).
  */
-function claudeMcpFiles(workingDirectory: URI | undefined, userHome: URI): URI[] {
-	const files: URI[] = [];
+function claudeMcpFiles(workingDirectory: URI | undefined, userHome: URI): { readonly uri: URI; readonly projectScoped?: boolean }[] {
+	const nativeConfig = URI.joinPath(userHome, '.claude.json');
+	const files: { readonly uri: URI; readonly projectScoped?: boolean }[] = [];
 	if (workingDirectory) {
-		files.push(URI.joinPath(workingDirectory, '.claude', 'settings.json'));
-		files.push(URI.joinPath(workingDirectory, '.mcp.json'));
+		files.push({ uri: nativeConfig, projectScoped: true });
+		files.push({ uri: URI.joinPath(workingDirectory, '.claude', 'settings.local.json') });
+		files.push({ uri: URI.joinPath(workingDirectory, '.claude', 'settings.json') });
+		files.push({ uri: URI.joinPath(workingDirectory, '.mcp.json') });
 	}
-	files.push(URI.joinPath(userHome, '.claude', 'settings.json'));
+	files.push({ uri: nativeConfig });
+	files.push({ uri: URI.joinPath(userHome, '.claude', 'settings.json') });
 	return files;
 }
 
@@ -56,9 +60,11 @@ export async function scanClaudeMcpServers(
 ): Promise<readonly McpServerCustomization[]> {
 	const seen = new Set<string>();
 	const result: McpServerCustomization[] = [];
-	for (const uri of claudeMcpFiles(workingDirectory, userHome)) {
+	for (const { uri, projectScoped } of claudeMcpFiles(workingDirectory, userHome)) {
 		const raw = await readJsonFile(uri, fileService);
-		const servers = extractMcpServerMap(uri, raw);
+		const projects = projectScoped && raw && typeof raw === 'object' ? (raw as Record<string, unknown>).projects : undefined;
+		const project = projects && typeof projects === 'object' && workingDirectory ? (projects as Record<string, unknown>)[workingDirectory.fsPath] : undefined;
+		const servers = extractMcpServerMap(uri, projectScoped ? project : raw);
 		if (!servers) {
 			continue;
 		}

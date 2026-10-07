@@ -104,6 +104,7 @@ import { COPILOT_INTEGRATION_ID } from '../../../endpoint/common/licenseAgreemen
 import { getAppNodeModulesUri } from '../appNodeModules.js';
 import { CopilotSlashCommandProvider } from './copilotSlashCommandProvider.js';
 import { SessionMcpDiscovery } from '../shared/sessionMcpDiscovery.js';
+import { filterSharedUserCustomizations, SharedUserCustomizationDiscovery, type IPrivateCustomizationNames } from '../shared/sharedUserCustomizations.js';
 import { hasClientPluginMcpDefaultCwd, readClientPluginMcpDefaultCwd } from '../../common/meta/clientPluginCustomizationMeta.js';
 import { classifyCopilotClientOperationFailure, CopilotClientStartupConfigChangedError, createCopilotFailureCorrelation, isRecognizedCopilotClientStartupFailure, reportCopilotClientOperationFailure, reportCopilotClientRecovery, reportCopilotClientRecoveryTurn, reportCopilotClientStartup, type CopilotClientOperation, type CopilotClientOperationFailureKind, type ICopilotFailureCorrelation } from './copilotFailureTelemetry.js';
 
@@ -6592,6 +6593,7 @@ export function mapToParsedPlugin(customizations: readonly DirectoryCustomizatio
  * helpers it needs.
  */
 class PluginController extends Disposable {
+	private readonly _sharedUserCustomizations: SharedUserCustomizationDiscovery;
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	/** Fires when host customizations change. Session controllers forward this. */
 	readonly onDidChange = this._onDidChange.event;
@@ -6613,6 +6615,8 @@ class PluginController extends Disposable {
 		super();
 
 		// Seed from current root config and subscribe to future changes.
+		this._sharedUserCustomizations = this._register(this._instantiationService.createInstance(SharedUserCustomizationDiscovery, true));
+		this._register(this._sharedUserCustomizations.onDidChange(() => this._onDidChange.fire()));
 		this._applyHostCustomizations();
 		this._register(this._configurationService.onDidRootConfigChange(() => {
 			this._applyHostCustomizations();
@@ -6620,7 +6624,7 @@ class PluginController extends Disposable {
 	}
 
 	public getConfiguredHostCustomizations(): readonly Customization[] {
-		return this._hostCustomizations.map(item => item.customization);
+		return this.hostCustomizations().map(item => item.customization);
 	}
 
 	public get configurationService(): IAgentConfigurationService {
@@ -6632,16 +6636,30 @@ class PluginController extends Disposable {
 	 * {@link SessionPluginController} to compose its per-session view.
 	 */
 	public hostCustomizations(): readonly IResolvedCustomization[] {
-		return this._hostCustomizations;
+		return [
+			...this._hostCustomizations,
+			...this._sharedUserCustomizations.plugins.map(plugin => ({
+				customization: plugin.customization,
+				plugin: plugin.parsed,
+				// Copilot already discovers ~/.agents/skills. Loose agents and MCP
+				// are passed explicitly, without reloading the root as a plugin.
+				pluginDir: plugin.loose ? undefined : plugin.pluginDir,
+			})),
+		];
 	}
 
 	/** In-flight host sync; awaited by `getCustomizationsSettled` consumers. */
-	public hostSync(): Promise<readonly IResolvedCustomization[]> {
-		return this._hostSync;
+	public async hostSync(): Promise<readonly IResolvedCustomization[]> {
+		await Promise.all([this._hostSync, this._sharedUserCustomizations.whenSettled()]);
+		return this.hostCustomizations();
 	}
 
 	public getUserHome(): URI {
 		return this._environmentService.userHome;
+	}
+
+	public sharedUserCustomizations() {
+		return this._sharedUserCustomizations.plugins;
 	}
 
 	public async getClient(): Promise<CopilotClient> {
@@ -6765,6 +6783,8 @@ interface IClientCustomizationState {
 
 /** Per-session plugin/customization view that publishes session-scoped actions. */
 class SessionPluginController extends Disposable {
+	private _nativeMcpNames: ReadonlySet<string> = new Set();
+	private _nativePluginNames: ReadonlySet<string> = new Set();
 	private readonly _onDidPublish = this._register(new Emitter<SessionAction>());
 	/** Per-session action stream (reset + per-item updates). */
 	readonly onDidPublish = this._onDidPublish.event;
@@ -6867,7 +6887,7 @@ class SessionPluginController extends Disposable {
 	}
 
 	private _resolveCustomizationEnablement() {
-		const hostCustomizations = this._parent.hostCustomizations();
+		const hostCustomizations = this._effectiveHostCustomizations(this._parent.hostCustomizations());
 		const clientCustomizations = this._flattenClientCustomizations();
 		const explicitPluginIds = new Set([
 			...hostCustomizations,
@@ -6889,6 +6909,53 @@ class SessionPluginController extends Disposable {
 			result.push(this._projectForPublish(definition.customization));
 		}
 		return resolveCustomizationEnablement(this._customizationEnablementService, this._session, result, this._clientChildEnablement(), this._clientPlugins());
+	}
+
+	private _effectiveHostCustomizations(host: readonly IResolvedCustomization[]): readonly IResolvedCustomization[] {
+		const shared = this._parent.sharedUserCustomizations();
+		const sharedIds = new Set(shared.map(plugin => plugin.customization.id));
+		const privateItems = [...host.filter(item => !sharedIds.has(item.customization.id)).map(item => item.customization), ...this._flattenClientCustomizations().map(item => item.customization), ...(this._discoveredEntry()?.currentCustomizations() ?? [])];
+		const sharedRoot = URI.joinPath(this._parent.getUserHome(), '.agents');
+		const children = privateItems.flatMap(item => item.children ?? [])
+			.filter(child => !extUriBiasedIgnorePathCase.isEqualOrParent(URI.parse(child.uri), sharedRoot));
+		const names: IPrivateCustomizationNames = {
+			skills: new Set(children.filter(child => child.type === CustomizationType.Skill).map(child => child.name)),
+			agents: new Set(children.filter(child => child.type === CustomizationType.Agent).map(child => child.name)),
+			mcpServers: new Set([
+				...this._nativeMcpNames,
+				...Object.keys(this._parent.configurationService.getRootValue(platformRootSchema, AgentHostMcpServersConfigKey) ?? {}),
+				...(this._mcpDiscoveryEntry()?.definitions.map(definition => definition.name) ?? []),
+				...children.filter(child => child.type === CustomizationType.McpServer).map(child => child.name),
+			]),
+			plugins: new Set([...this._nativePluginNames, ...privateItems.filter(item => item.type === CustomizationType.Plugin).map(item => item.name)]),
+		};
+		const effective = new Map(filterSharedUserCustomizations(shared, names).map(plugin => [plugin.customization.id, plugin]));
+		return host.flatMap(item => {
+			if (!sharedIds.has(item.customization.id)) {
+				return [item];
+			}
+			const plugin = effective.get(item.customization.id);
+			if (!plugin) {
+				return [];
+			}
+			// A filtered package must be projected explicitly; handing the original
+			// directory to the SDK would rediscover the shadowed components.
+			const filtered = plugin.parsed.skills.length !== item.plugin?.skills.length || plugin.parsed.agents.length !== item.plugin?.agents.length || plugin.parsed.mcpServers.length !== item.plugin?.mcpServers.length;
+			return [{ ...item, customization: plugin.customization, plugin: plugin.parsed, pluginDir: filtered ? undefined : item.pluginDir }];
+		});
+	}
+
+	private async _refreshNativeSharedPrecedence(): Promise<void> {
+		if (!this._parent.sharedUserCustomizations().length) {
+			return;
+		}
+		const client = await this._parent.getClient();
+		const [mcp, plugins] = await Promise.all([
+			client.rpc.mcp.discover({ workingDirectory: this._directory?.fsPath }),
+			client.rpc.plugins.list(),
+		]);
+		this._nativeMcpNames = new Set(mcp.servers.map(server => server.name));
+		this._nativePluginNames = new Set(plugins.plugins.map(plugin => plugin.name));
 	}
 
 	/**
@@ -6929,6 +6996,7 @@ class SessionPluginController extends Disposable {
 			entry?.whenSettled(),
 			this._mcpDiscoveryEntry()?.refresh(),
 		]);
+		await this._refreshNativeSharedPrecedence();
 		return this.getCustomizations();
 	}
 
@@ -6950,6 +7018,7 @@ class SessionPluginController extends Disposable {
 			mcpDiscovery?.refresh(),
 		]);
 
+		await this._refreshNativeSharedPrecedence();
 		const resolved = this._resolveCustomizationEnablement();
 		const desiredByUri = new Map(resolved.customizations.map(customization => [customization.uri, customization]));
 		const desiredById = new Map(resolved.customizations.map(customization => [customization.id, customization]));
@@ -6997,7 +7066,7 @@ class SessionPluginController extends Disposable {
 		} satisfies ICopilotPluginInfo] : [];
 		return [
 			...workspaceMcp,
-			...host.filter(item => !!item.plugin && isEnabledForSdk(item.customization))
+			...this._effectiveHostCustomizations(host).filter(item => !!item.plugin && isEnabledForSdk(item.customization))
 				.map(item => ({ ...withSdkRegistration(item.plugin!, item.pluginDir), sourceUri: URI.parse(item.customization.uri), ...(disabledChildren(item.customization) ? { disabledMcpServers: disabledChildren(item.customization) } : {}) })),
 			...this._flattenClientCustomizations().filter(item => !!item.plugin && isEnabledForSdk(item.customization))
 				.map(item => ({ ...withClientDefaults(item), sourceUri: URI.parse(item.customization.uri), ...(disabledChildren(item.customization) ? { disabledMcpServers: disabledChildren(item.customization) } : {}) })),

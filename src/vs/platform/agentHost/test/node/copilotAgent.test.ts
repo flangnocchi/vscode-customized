@@ -21,6 +21,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { autorun, observableValue, waitForState } from '../../../../base/common/observable.js';
 import { URI } from '../../../../base/common/uri.js';
+import { hasKey } from '../../../../base/common/types.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { PluginFormat } from '../../../agentPlugins/common/pluginParsers.js';
 import { INativeEnvironmentService } from '../../../environment/common/environment.js';
@@ -546,6 +547,8 @@ interface ITestCopilotModelInfo {
 
 interface ITestCopilotClient extends Pick<CopilotClient, 'start' | 'stop' | 'listSessions' | 'createSession' | 'resumeSession' | 'getSessionMetadata' | 'deleteSession'> {
 	readonly rpc: {
+		readonly mcp: Pick<CopilotClient['rpc']['mcp'], 'discover'>;
+		readonly plugins: Pick<CopilotClient['rpc']['plugins'], 'list'>;
 		readonly agents: CopilotAgentDiscovery;
 		readonly instructions: CopilotInstructionDiscovery;
 		readonly skills: CopilotSkillDiscovery;
@@ -592,6 +595,8 @@ function toSdkModelInfo(model: ITestCopilotModelInfo): CopilotModelInfo {
 }
 
 class TestCopilotClient implements ITestCopilotClient {
+	discoverMcp: CopilotClient['rpc']['mcp']['discover'] = async () => ({ servers: [] });
+	listPlugins: CopilotClient['rpc']['plugins']['list'] = async () => ({ plugins: [] });
 	discoverAgents: CopilotAgentDiscovery['discover'] = async () => ({ agents: [] });
 	getAgentDiscoveryPaths: CopilotAgentDiscovery['getDiscoveryPaths'] = async () => ({ paths: [] });
 	discoverInstructions: CopilotInstructionDiscovery['discover'] = async () => ({ sources: [] });
@@ -603,6 +608,8 @@ class TestCopilotClient implements ITestCopilotClient {
 	readonly skillDiscoveryRequests: Parameters<CopilotSkillDiscovery['discover']>[0][] = [];
 
 	readonly rpc: ITestCopilotClient['rpc'] = {
+		mcp: { discover: params => this.discoverMcp(params) },
+		plugins: { list: () => this.listPlugins() },
 		agents: {
 			discover: async params => {
 				this.agentDiscoveryRequests.push(params);
@@ -10629,6 +10636,63 @@ suite('CopilotAgent', () => {
 				await disposeAgent(agent);
 			}
 		});
+
+		for (const [workspaceless, privateConflict] of [[false, false], [true, false], [false, true], [true, true]]) {
+			test(`shared user customizations supplement Copilot with native precedence (${workspaceless ? 'quick chat' : 'project'}${privateConflict ? ', private conflicts' : ''})`, async () => {
+				const userHome = URI.file(await fs.mkdtemp(`${os.tmpdir()}/copilot-shared-home-`));
+				const fileService = disposables.add(new FileService(new NullLogService()));
+				disposables.add(fileService.registerProvider(Schemas.file, disposables.add(new InMemoryFileSystemProvider())));
+				const client = new TestCopilotClient([]);
+				let config: Parameters<ITestCopilotClient['createSession']>[0] | undefined;
+				client.createSession = async value => {
+					config = value;
+					return new MockCopilotSession() as unknown as CopilotSession;
+				};
+				const { agent, configurationService } = createTestAgentContext(disposables, {
+					copilotClient: client,
+					fileService,
+					userHome,
+					sessionDataService: disposables.add(new TestSessionDataService()),
+				});
+				const root = URI.joinPath(userHome, '.agents');
+				await fileService.writeFile(URI.joinPath(root, 'skills/native/SKILL.md'), VSBuffer.fromString('---\nname: native\ndescription: Native skill\n---\nInstructions.'));
+				await fileService.writeFile(URI.joinPath(root, 'agents/research.agent.md'), VSBuffer.fromString('---\nname: researcher\ndescription: Shared researcher\n---\nShared instructions.'));
+				await fileService.writeFile(URI.joinPath(root, 'mcp.json'), VSBuffer.fromString('{"mcpServers":{"shared":{"command":"shared-command"}}}'));
+				await fileService.writeFile(URI.joinPath(root, 'instructions/common.instructions.md'), VSBuffer.fromString('Shared always-on instruction.'));
+				if (privateConflict) {
+					const privateAgent = URI.joinPath(userHome, '.copilot/agents/research.agent.md');
+					await fileService.writeFile(privateAgent, VSBuffer.fromString('---\nname: researcher\ndescription: Private researcher\n---\nPrivate instructions.'));
+					client.discoverAgents = async () => ({ agents: [{ id: 'private-researcher', name: 'researcher', displayName: 'researcher', description: 'Private', path: privateAgent.fsPath }] });
+					client.discoverMcp = async () => ({ servers: [{ name: 'shared', source: 'user', enabled: false }] });
+					client.listPlugins = async () => ({ plugins: [{ name: 'sample', marketplace: '', enabled: false }] });
+					await fileService.writeFile(URI.joinPath(root, 'plugins/sample/.claude-plugin/plugin.json'), VSBuffer.fromString('{"name":"sample"}'));
+					await fileService.writeFile(URI.joinPath(root, 'plugins/sample/skills/image/SKILL.md'), VSBuffer.fromString('---\nname: image\ndescription: Shared packaged skill\n---\nInstructions.'));
+				}
+				configurationService.updateRootConfig({ [AgentHostConfigKey.UnifiedUserCustomizations]: true });
+				await agent['_plugins'].hostSync();
+				try {
+					await agent.authenticate('https://api.github.com', 'token');
+					const result = await provisionSession(agent, { session: AgentSession.uri('copilotcli', `shared-${workspaceless}`), ...(workspaceless ? {} : { workingDirectories: [URI.file('/workspace')] }) });
+					await agent.chats.sendMessage(defaultChatUri(result.session), 'hello', undefined, undefined, undefined, undefined, exactChatContext(result.session, defaultChatUri(result.session), result.session));
+					assert.ok(config);
+					assert.deepStrictEqual(config.customAgents?.filter(agent => agent.prompt.includes('Shared instructions.')).map(agent => agent.name), privateConflict ? [] : ['researcher']);
+					if (privateConflict) {
+						assert.strictEqual(config.mcpServers?.shared, undefined, 'shared MCP cannot reactivate a disabled private definition');
+					} else {
+						assert.ok(config.mcpServers?.shared && hasKey(config.mcpServers.shared, { command: true }));
+						assert.strictEqual(config.mcpServers.shared.command, 'shared-command');
+					}
+					assert.deepStrictEqual(config.skillDirectories ?? [], []);
+					assert.deepStrictEqual(config.pluginDirectories ?? [], []);
+					assert.strictEqual(config.enableConfigDiscovery, true);
+					assert.strictEqual(config.enableSkills, true);
+					assert.deepStrictEqual(config.instructionDirectories, [URI.joinPath(root, 'instructions').fsPath]);
+				} finally {
+					await disposeAgent(agent);
+					await fs.rm(userHome.fsPath, { recursive: true, force: true });
+				}
+			});
+		}
 
 		test('getSessionCustomizations publishes discovered files as Directory customizations', async () => {
 			const fileService = disposables.add(new FileService(new NullLogService()));

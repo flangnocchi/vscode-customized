@@ -8526,6 +8526,88 @@ suite('ClaudeAgent — Phase 11 customizations', () => {
 
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
+	for (const [workspaceless, privateConflict] of [[false, false], [true, false], [false, true], [true, true]]) {
+		test(`shared user customizations reach Claude startup with native precedence (${workspaceless ? 'quick chat' : 'project'}${privateConflict ? ', private conflicts' : ''})`, async () => {
+			const userHome = URI.file(await fs.mkdtemp(`${os.tmpdir()}/claude-shared-home-`));
+			disposables.add(toDisposable(() => { void fs.rm(userHome.fsPath, { recursive: true, force: true }); }));
+			const { agent, sdk, fileService, configService } = createTestContext(disposables, {
+				userHome,
+				rootConfig: { [AgentHostConfigKey.UnifiedUserCustomizations]: true },
+				sessionDataService: {
+					...createSessionDataService(new TestSessionDatabase()),
+					getSessionDataDir: session => URI.joinPath(userHome, 'session-data', AgentSession.id(session)),
+					getSessionDataDirById: sessionId => URI.joinPath(userHome, 'session-data', sessionId),
+				},
+			});
+			const root = URI.joinPath(userHome, '.agents');
+			const agentFile = URI.joinPath(root, 'agents', privateConflict ? 'helper.agent.md' : 'research.agent.md');
+			await fileService.writeFile(agentFile, VSBuffer.fromString('---\nname: researcher\ndescription: Shared researcher\n---\nShared instructions.'));
+			if (privateConflict) {
+				await fileService.writeFile(agentFile, VSBuffer.fromString('---\nname: helper\ndescription: Shared helper\n---\nShared helper instructions.'));
+				await fileService.writeFile(URI.joinPath(root, 'agents/research.agent.md'), VSBuffer.fromString('---\nname: researcher\ndescription: Shared researcher\n---\nShared instructions.'));
+				await fileService.writeFile(URI.joinPath(userHome, '.claude/agents/research.agent.md'), VSBuffer.fromString('---\nname: researcher\ndescription: Private researcher\n---\nPrivate instructions.'));
+				await fileService.writeFile(URI.joinPath(userHome, '.claude/skills/research/SKILL.md'), VSBuffer.fromString('---\nname: research\ndescription: Private skill\n---\nPrivate skill instructions.'));
+				await fileService.writeFile(URI.joinPath(root, 'skills/image/SKILL.md'), VSBuffer.fromString('---\nname: image\ndescription: Shared image skill\n---\nInstructions.'));
+				await fileService.writeFile(URI.joinPath(userHome, '.claude.json'), VSBuffer.fromString('{"mcpServers":{"shared":{"type":"http","url":"https://private.example/mcp"}}}'));
+				await fileService.writeFile(URI.joinPath(userHome, '.claude/settings.json'), VSBuffer.fromString('{"enabledPlugins":{"sample@private":false}}'));
+				await fileService.writeFile(URI.joinPath(root, 'plugins/sample/.claude-plugin/plugin.json'), VSBuffer.fromString('{"name":"sample"}'));
+				await fileService.writeFile(URI.joinPath(root, 'plugins/sample/skills/example/SKILL.md'), VSBuffer.fromString('---\nname: example\ndescription: Shared packaged skill\n---\nInstructions.'));
+			}
+			await fileService.writeFile(URI.joinPath(root, 'skills/research/SKILL.md'), VSBuffer.fromString('---\nname: research\ndescription: Shared skill\n---\nShared skill instructions.'));
+			await fileService.writeFile(URI.joinPath(root, 'mcp.json'), VSBuffer.fromString('{"mcpServers":{"shared":{"command":"shared-command"}}}'));
+			await fileService.writeFile(URI.joinPath(root, 'instructions/common.instructions.md'), VSBuffer.fromString('Shared always-on instruction.'));
+			await fileService.writeFile(URI.joinPath(root, 'hooks/hooks.json'), VSBuffer.fromString('{"hooks":{"SessionStart":[{"type":"command","command":"echo must-not-run"}]}}'));
+			await agent.authenticate(GITHUB_COPILOT_PROTECTED_RESOURCE.resource, 'tok');
+			const created = await createSession(agent, { ...(workspaceless ? {} : { workingDirectories: [URI.file('/workspace')] }) });
+			const chat = defaultChatUri(created.session);
+			await agent.chats.changeAgent(chat, { uri: agentFile.toString() }, chatContext(chat));
+			sdk.supportedAgentsResult = [{ name: privateConflict ? '.agents:helper' : '.agents:researcher', description: 'Shared researcher' }];
+			sdk.supportedCommandsResult = [{ name: privateConflict ? '.agents:image' : '.agents:research', description: 'Shared skill', argumentHint: '' }];
+			sdk.mcpServerStatusResult = [];
+			sdk.nextQueryMessages = [{ ...makeSystemInitMessage(created.sdkSessionId), plugins: [{ name: '.agents', get path() { return sdk.capturedStartupOptions.at(-1)?.plugins?.[0].path ?? root.fsPath; } }] }, makeResultSuccess(created.sdkSessionId)];
+			await agent.chats.sendMessage(chat, 'first', undefined, undefined, 'shared-1', undefined, undefined, chatContext(chat));
+			const first = sdk.capturedStartupOptions[0];
+			if (privateConflict) {
+				assert.strictEqual(first.plugins?.length, 1);
+				const view = URI.file(first.plugins![0].path);
+				assert.notStrictEqual(view.toString(), root.toString());
+				assert.strictEqual(await fileService.exists(URI.joinPath(view, 'skills/research/SKILL.md')), false, 'SDK cannot rediscover the shadowed shared skill');
+				assert.strictEqual(await fileService.exists(URI.joinPath(view, 'agents/research.agent.md')), false, 'SDK cannot rediscover the shadowed shared agent');
+				assert.strictEqual(await fileService.exists(URI.joinPath(view, 'skills/image/SKILL.md')), true);
+				assert.strictEqual(await fileService.exists(URI.joinPath(view, 'agents/helper.agent.md')), true);
+				assert.strictEqual(first.mcpServers?.shared, undefined);
+			} else {
+				assert.strictEqual(first.plugins?.length, 1);
+				const view = URI.file(first.plugins![0].path);
+				assert.notStrictEqual(view.toString(), root.toString());
+				assert.strictEqual(await fileService.exists(URI.joinPath(view, 'skills/research/SKILL.md')), true);
+				assert.strictEqual(await fileService.exists(URI.joinPath(view, 'agents/research.agent.md')), true);
+				assert.strictEqual((first.mcpServers?.shared as { command?: string } | undefined)?.command, 'shared-command');
+			}
+			assert.deepStrictEqual(first.systemPrompt, { type: 'preset', preset: 'claude_code', append: 'Shared always-on instruction.' });
+			assert.strictEqual(await fileService.exists(URI.joinPath(URI.file(first.plugins![0].path), 'hooks/hooks.json')), false, 'SDK cannot rediscover loose shared hooks');
+			assert.strictEqual(first.agent, privateConflict ? '.agents:helper' : '.agents:researcher');
+			assert.deepStrictEqual(first.settingSources, ['user', 'project', 'local']);
+			assert.strictEqual(typeof first.settings === 'object' && Object.hasOwn(first.settings, 'skillOverrides'), false);
+			const catalog = await agent.getChatCustomizations(chat, chatContext(chat));
+			const children = catalog.flatMap(customization => customization.type === CustomizationType.McpServer ? [] : customization.children ?? []);
+			assert.deepStrictEqual(children.filter(child => child.uri === agentFile.toString()).map(child => child.name), [privateConflict ? 'helper' : 'researcher']);
+			if (privateConflict) {
+				assert.strictEqual(catalog.some(customization => customization.name === 'sample'), false);
+				assert.strictEqual(children.some(child => child.uri === URI.joinPath(root, 'skills/research/SKILL.md').toString()), false);
+			}
+			assert.strictEqual(children.some(child => child.name === '.agents:researcher' || child.name === '.agents:research'), false, 'shared resources do not also appear as built-ins');
+
+			await agent.chats.changeAgent(chat, undefined, chatContext(chat));
+			configService.updateRootConfig({ [AgentHostConfigKey.UnifiedUserCustomizations]: false });
+			sdk.nextQueryMessages = [makeSystemInitMessage(created.sdkSessionId), makeResultSuccess(created.sdkSessionId)];
+			await agent.chats.sendMessage(chat, 'second', undefined, undefined, 'shared-2', undefined, undefined, chatContext(chat));
+			assert.strictEqual(sdk.capturedStartupOptions.at(-1)?.plugins, undefined);
+			assert.strictEqual(sdk.capturedStartupOptions.at(-1)?.mcpServers?.shared, undefined);
+			assert.deepStrictEqual(sdk.capturedStartupOptions.at(-1)?.systemPrompt, { type: 'preset', preset: 'claude_code' });
+		});
+	}
+
 	function makeSyncedRef(uri: string, dir: string, children?: ChildCustomization[]): ISyncedCustomization {
 		return {
 			customization: {

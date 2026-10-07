@@ -19,6 +19,7 @@ import { generateUuid } from '../../../../../base/common/uuid.js';
 import { join, sep } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { INativeEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
@@ -1668,6 +1669,75 @@ suite('CodexAgent prewarm eviction', () => {
 			agents: undefined,
 		});
 	});
+
+	for (const materialized of [false, true]) {
+		test(`quick chats publish native user skills ${materialized ? 'with a managed directory' : 'before materialization'}`, async () => {
+			const agent = await createAgent(disposables);
+			agent['_schedulePrewarm'] = () => { };
+			const { session } = await createSession(agent);
+			const chat = defaultChatOf(session);
+			const entry = agent['_sessions'].get(AgentSession.id(session))!;
+			if (materialized) {
+				entry.workingDirectory = URI.file('/scratch/quick-chat');
+				entry.managedWorkingDirectory = entry.workingDirectory;
+			}
+			const cwd = entry.workingDirectory?.fsPath ?? agent['_environmentService'].userHome.fsPath;
+			const userSkill = { name: 'investment', description: 'Shared user skill', path: '/user/.agents/skills/investment/SKILL.md', scope: 'user', enabled: true, pluginId: null };
+			const systemSkill = { ...userSkill, name: 'built-in', path: '/codex/skills/built-in/SKILL.md', scope: 'system' };
+			const repoSkill = { ...userSkill, name: 'unrelated-project', path: `${cwd}/.agents/skills/project/SKILL.md`, scope: 'repo' };
+			const requests: { method: string; cwds: readonly string[] }[] = [];
+			const client = {
+				request: async (method: string, params: { cwds: readonly string[] }) => {
+					requests.push({ method, cwds: params.cwds });
+					return method === 'skills/list'
+						? { data: [{ cwd, skills: [userSkill, systemSkill, repoSkill], errors: [] }] }
+						: { data: [] };
+				},
+			} as never;
+			agent['_connection'] = {
+				kind: 'ready',
+				client,
+				child: { kill: () => true },
+			} as never;
+			const skillsIn = (customizations: readonly Customization[]) => customizations
+				.flatMap(customization => customization.type === CustomizationType.Directory ? customization.children ?? [] : [])
+				.filter(child => child.type === CustomizationType.Skill)
+				.map(skill => skill.uri);
+			const snapshot = await agent.getChatCustomizations(chat, chatContext(session, chat));
+			const signals: AgentSignal[] = [];
+			disposables.add(agent.onDidChatProgress(signal => signals.push(signal)));
+			await runWithFakedTimers({}, async () => {
+				const refreshed = new DeferredPromise<void>();
+				const refresh = agent['_refreshSkillHookCustomizations'].bind(agent);
+				agent['_refreshSkillHookCustomizations'] = async current => {
+					await refresh(current);
+					refreshed.complete();
+				};
+				agent['_queueSkillHookCustomizationRefresh'](client);
+				await refreshed.p;
+			});
+			const updated = signals.flatMap(signal => signal.kind === 'action' && signal.action.type === ActionType.SessionCustomizationUpdated ? [signal.action.customization] : []);
+
+			assert.deepStrictEqual({
+				snapshot: skillsIn(snapshot),
+				updated: skillsIn(updated),
+				requests,
+				workingDirectory: entry.workingDirectory?.fsPath,
+				threadId: entry.threadId,
+			}, {
+				snapshot: [URI.file(userSkill.path).toString(), URI.file(systemSkill.path).toString()],
+				updated: [URI.file(userSkill.path).toString(), URI.file(systemSkill.path).toString()],
+				requests: [
+					{ method: 'skills/list', cwds: [cwd] },
+					{ method: 'hooks/list', cwds: [cwd] },
+					{ method: 'skills/list', cwds: [cwd] },
+					{ method: 'hooks/list', cwds: [cwd] },
+				],
+				workingDirectory: materialized ? cwd : undefined,
+				threadId: undefined,
+			});
+		});
+	}
 
 	test('workspace skill roots stay session-scoped rather than process-global', async () => {
 		const agent = await createAgent(disposables);

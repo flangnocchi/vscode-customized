@@ -1433,6 +1433,6 @@ export function toParsedSkill(resource: ISkillPluginResource): IParsedSkill {
 	return { ...resource, customization: makeSkillCustomization(resource) };
 }
 
-function toParsedRule(resource: INamedPluginResource): IParsedRule {
+export function toParsedRule(resource: INamedPluginResource): IParsedRule {
 	return { ...resource, customization: makeRuleCustomization(resource) };
 }
