@@ -288,6 +288,17 @@ suite('claudeToolDisplay — §4 mapping table', () => {
 		]);
 	});
 
+	test('WebSearch reads as a web search instead of a raw tool name', () => {
+		const name = getClaudeToolDisplayName('WebSearch');
+		assert.deepStrictEqual([
+			name,
+			getClaudeInvocationMessage('WebSearch', name, { query: 'vscode agent host' }),
+			getClaudePastTenseMessage('WebSearch', name, { query: 'vscode agent host' }, true),
+			getClaudeInvocationMessage('WebSearch', name, {}),
+			getClaudePastTenseMessage('WebSearch', name, {}, true),
+		], ['Search the web', { markdown: 'Searching the web for `vscode agent host`' }, { markdown: 'Searched the web for `vscode agent host`' }, 'Searching the web', 'Searched the web']);
+	});
+
 	test('Phase 8.5 — TaskUpdate message varies by status', () => {
 		const invoke = (status?: string) =>
 			getClaudeInvocationMessage('TaskUpdate', 'Update task', status ? { taskId: '1', status } : { taskId: '1' });

@@ -175,6 +175,7 @@ export function getClaudeToolDisplayName(toolName: string): string {
 		case 'NotebookEdit': return localize('claude.tool.notebookEdit', "Edit notebook");
 		case 'TodoWrite': return localize('claude.tool.todoWrite', "Update todo list");
 		case 'WebFetch': return localize('claude.tool.webFetch', "Fetch URL");
+		case 'WebSearch': return localize('claude.tool.webSearch', "Search the web");
 		case 'Task':
 		case 'Agent': return localize('claude.tool.task', "Run subagent task");
 		case 'ExitPlanMode': return localize('claude.tool.exitPlanMode', "Ready to code?");
@@ -429,6 +430,13 @@ export function getClaudeInvocationMessage(
 			}
 			return localize('claude.toolInvoke.webFetchGeneric', "Fetching URL");
 		}
+		case 'WebSearch': {
+			const query = readStringField(input, 'query');
+			if (query) {
+				return md(localize('claude.toolInvoke.webSearch', "Searching the web for {0}", appendEscapedMarkdownInlineCode(truncate(query, 80))));
+			}
+			return localize('claude.toolInvoke.webSearchGeneric', "Searching the web");
+		}
 		case 'Task':
 		case 'Agent': {
 			const description = readStringField(input, 'description');
@@ -540,6 +548,13 @@ export function getClaudePastTenseMessage(
 				return md(localize('claude.toolComplete.webFetch', "Fetched {0}", `[${escapeMarkdownLinkLabel(truncate(url, 80))}](${url})`));
 			}
 			return localize('claude.toolComplete.webFetchGeneric', "Fetched URL");
+		}
+		case 'WebSearch': {
+			const query = readStringField(input, 'query');
+			if (query) {
+				return md(localize('claude.toolComplete.webSearch', "Searched the web for {0}", appendEscapedMarkdownInlineCode(truncate(query, 80))));
+			}
+			return localize('claude.toolComplete.webSearchGeneric', "Searched the web");
 		}
 		case 'Task':
 		case 'Agent':
