@@ -1508,6 +1508,16 @@ suite('mcpListWidget', () => {
 		}, { lifecycle: undefined, enablement: [] });
 	});
 
+	test('renders runtime-managed server status without inert switches or management buttons', () => {
+		const server = createAgentHostServer({ readOnly: true, enabled: true, status: McpServerStatus.Ready, state: { kind: McpServerStatus.Ready } });
+		const widget = Object.create(McpListWidget.prototype) as {
+			renderMcpListActions(getEntry: () => { type: 'session-server-item'; server: AgentHostMcpServer }, actions: HTMLElement, store: DisposableStore, updateTabbability: () => void): void;
+		};
+		const actions = document.createElement('div');
+		widget.renderMcpListActions(() => ({ type: 'session-server-item', server }), actions, disposables.add(new DisposableStore()), () => { });
+		assert.deepStrictEqual({ text: actions.textContent, controls: actions.querySelectorAll('button, [role="switch"], [role="checkbox"]').length }, { text: 'Running', controls: 0 });
+	});
+
 	test('uses the current active-session server enablement for rows and lifecycle actions', () => {
 		const disabledServer = createAgentHostServer({ enabled: false });
 		const enabledServer = createAgentHostServer({ enabled: true });
