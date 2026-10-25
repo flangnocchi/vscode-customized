@@ -74,6 +74,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../../pla
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
 import { IWorkspaceTrustManagementService } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { AgentHostDownloadProgress } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentHost/agentHostDownloadProgress.js';
+import { getNativeCliAgentIcon } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentHostProviderIcons.js';
 import { IAgentCustomizationScope, IAgentHostActiveClientService } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentHost/agentHostActiveClientService.js';
 import { AgentHostBackgroundShellOutputs } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentHost/agentHostBackgroundShells.js';
 import type { IChatBackgroundShell } from '../../../../../workbench/contrib/chat/common/sessionChatPills.js';
@@ -4992,7 +4993,7 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 			return Codicon.openai;
 		}
 
-		return undefined;
+		return getNativeCliAgentIcon(provider);
 	}
 
 	/**

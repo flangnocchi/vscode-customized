@@ -4,12 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
+import { join } from '../../../../base/common/path.js';
 import { DeferredPromise } from '../../../../base/common/async.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../log/common/log.js';
+import { INativeEnvironmentService } from '../../../environment/common/environment.js';
 import { type IAgentChatContext, fixedChatOwnerRef } from '../../common/agent.js';
 import { nativeCliAgentEnv, type INativeCliAgentConfig, type NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import { ActionType } from '../../common/state/sessionActions.js';
@@ -67,14 +70,14 @@ suite('Native CLI agents', () => {
 	const store = new DisposableStore();
 	const database = new TestSessionDatabase();
 	const data = createSessionDataService(database);
-	const config: INativeCliAgentConfig = { enabled: true, executable: process.execPath, args: ['-e', fixture], home: '', models: [] };
+	const config: INativeCliAgentConfig = { enabled: true, executable: process.execPath, args: ['-e', fixture], home: '', models: [{ id: 'fixture/one', name: 'Fixture Model' }] };
 
 	teardown(() => store.clear());
 	suiteTeardown(() => { database.dispose(); store.dispose(); });
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	function agent(id: NativeCliAgentId): NativeCliAgent {
-		return store.add(new NativeCliAgent(id, config, data, new NullLogService()));
+		return store.add(new NativeCliAgent(id, config, data, new NullLogService(), { userHome: URI.file(tmpdir()) } as INativeEnvironmentService));
 	}
 
 	async function create(provider: NativeCliAgent, suffix: string): Promise<URI> {
@@ -88,6 +91,29 @@ suite('Native CLI agents', () => {
 	}
 
 	for (const dialect of ['dsh', 'zcode'] as const) {
+		test(`${dialect}: a workspaceless chat sends and resumes in its stable scratch folder`, async () => {
+			const home = await fs.mkdtemp(join(tmpdir(), 'native-cli-workspaceless-'));
+			const provider = store.add(new NativeCliAgent(dialect, config, data, new NullLogService(), { userHome: URI.file(home) } as INativeEnvironmentService));
+			const chat = URI.parse(`ahp-chat:/${dialect}-workspaceless`);
+			const ctx = { ...context(chat), launchWorkingDirectories: undefined, workspaceless: true };
+			let project: unknown;
+			store.add(provider.onDidMaterializeChat(event => { project = event.project; }));
+			try {
+				await provider.chats.createChat(chat, ctx);
+				const scratch = (await provider.getChatMetadata(chat, ctx))?.workingDirectories?.[0].fsPath;
+				assert.strictEqual(scratch, join(home, '.copilot/chats/test'));
+				await provider.chats.sendMessage(chat, 'first', undefined, undefined, 'first', undefined, ctx);
+				assert.strictEqual(project, undefined, 'A scratch folder must not become a workspace project');
+				await provider.chats.releaseChat?.(chat, ctx);
+				await fs.rm(scratch!, { recursive: true });
+				await provider.chats.sendMessage(chat, 'resume', undefined, undefined, 'second', undefined, ctx);
+				assert.deepStrictEqual((await provider.chats.getMessages(chat, ctx)).map(turn => turn.state), [TurnState.Complete, TurnState.Complete]);
+			} finally {
+				await provider.shutdown();
+				await fs.rm(home, { recursive: true, force: true });
+			}
+		});
+
 		test(`${dialect}: reuses its process across turns and preserves history across provider restart`, async () => {
 			const provider = agent(dialect);
 			const chat = await create(provider, `${dialect}-restore`);

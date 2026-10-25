@@ -168,6 +168,7 @@
     "vscode-regexpp": "^3.1.0",
     "vscode-textmate": "^9.3.2",
     "ws": "^8.19.0",
+    "yaml": "2.8.3",
     "yauzl": "^3.3.1",
     "yazl": "^2.4.3",
     "zod": "^4.4.3"

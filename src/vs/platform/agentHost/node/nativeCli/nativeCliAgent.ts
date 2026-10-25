@@ -15,13 +15,16 @@ import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../log/common/log.js';
-import { type AgentSignal, type IActiveClient, type IAgent, type IAgentChatContext, type IAgentChatDataChange, type IAgentChats, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentMaterializeChatEvent, type IAgentModelInfo, resolveAgentChatContext } from '../../common/agent.js';
+import { INativeEnvironmentService } from '../../../environment/common/environment.js';
+import { AgentSession, type AgentSignal, type IActiveClient, type IAgent, type IAgentChatContext, type IAgentChatDataChange, type IAgentChats, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentMaterializeChatEvent, type IAgentModelInfo, resolveAgentChatContext } from '../../common/agent.js';
 import { type INativeCliAgentConfig, type NativeCliAgentId, nativeCliAgentEnv, nativeCliAgentIds } from '../../common/nativeCliAgentConfig.js';
 import { ISessionDataService } from '../../common/sessionDataService.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, ChatInputResponseKind, TurnState, type ChatInputAnswer, type ChatInputQuestion, type Customization, type ModelSelection, type Turn } from '../../common/state/sessionState.js';
 import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } from './nativeCliTransport.js';
 import { NativeCliTurn } from './nativeCliTurn.js';
+import { ensureWorkspacelessScratchDir } from '../workspacelessScratchDir.js';
+import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
 
 interface IBacking {
 	version: 1;
@@ -32,6 +35,7 @@ interface IBacking {
 	persisted: boolean;
 	createdAt: number;
 	modifiedAt: number;
+	workspaceless?: boolean;
 }
 
 interface IChat {
@@ -114,16 +118,40 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	private readonly permissions = new Map<string, { chat: IChat; deferred: DeferredPromise<unknown>; method: string }>();
 	private shutdownTask: Promise<void> | undefined;
 	private closing = false;
+	private readonly catalogAbort = new AbortController();
+	private readonly catalogReady: Promise<void>;
+	private defaultModel: ModelSelection | undefined;
 
 	constructor(
 		readonly id: NativeCliAgentId,
 		private readonly config: INativeCliAgentConfig,
 		@ISessionDataService private readonly dataService: ISessionDataService,
 		@ILogService private readonly logService: ILogService,
+		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 	) {
 		super();
-		const defaults = id === 'dsh' ? [{ id: 'deepseek-official/deepseek-flash', name: localize('dsh.defaultModel', "DeepSeek Harness Default") }] : [{ id: 'default', name: localize('zcode.defaultModel', "ZCode Default") }];
-		this.catalog.set((config.models.length ? config.models : defaults).map(model => ({ ...model, provider: id, supportsVision: false })), undefined);
+		this._register(toDisposable(() => this.catalogAbort.abort()));
+		if (config.models.length) {
+			this.catalog.set(config.models.map(model => ({ ...model, provider: id, supportsVision: false })), undefined);
+			this.defaultModel = { id: config.models[0].id };
+			this.catalogReady = Promise.resolve();
+		} else {
+			this.catalogReady = this.loadModelCatalog();
+		}
+	}
+
+	private async loadModelCatalog(): Promise<void> {
+		try {
+			const launch = await nativeCliLaunch(this.id, this.config, this.environmentService.userHome.fsPath);
+			const catalog = await discoverNativeCliModels(this.id, launch, this.catalogAbort.signal);
+			if (!this.closing) {
+				this.defaultModel = catalog.defaultModel;
+				this.catalog.set(catalog.models, undefined);
+			}
+		} catch {
+			// CLI configuration dumps can contain credentials. Never log their output or parser errors.
+			if (!this.closing) { this.logService.warn('Native model catalog unavailable', this.id); }
+		}
 	}
 
 	getDescriptor() {
@@ -168,13 +196,19 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	}
 
 	private async create(chat: URI, context: IAgentChatContext, options?: IAgentCreateChatOptions): Promise<IAgentCreateChatResult> {
+		await this.catalogReady;
+		if (this.closing) { throw new CancellationError(); }
 		if (options?.fork || options?.importConversation) { throw new Error(localize('nativeCli.branching', "Native CLI conversation branching and import are not supported.")); }
 		if (this.entries.has(chat.toString())) { throw new Error(localize('nativeCli.chatExists', "Native agent chat already exists.")); }
 		const directories = options?.workingDirectories ?? context.launchWorkingDirectories;
 		if (directories && (directories.length > 1 || directories.some(directory => directory.scheme !== 'file'))) { throw new Error(localize('nativeCli.singleRoot', "Native CLI agents support one local workspace folder per chat.")); }
-		const cwd = options?.workingDirectories?.[0]?.fsPath ?? context.launchWorkingDirectories?.[0]?.fsPath;
-		if (!cwd || !isAbsolute(cwd)) { throw new Error(localize('nativeCli.workspaceRequired', "Native CLI agents require a local workspace folder.")); }
-		const entry = this.newEntry(chat, context.resource, { version: 1, provider: this.id, nativeId: this.id === 'zcode' ? `sess_${generateUuid()}` : generateUuid(), cwd, model: options?.model ?? { id: this.catalog.get()[0].id }, persisted: false, createdAt: Date.now(), modifiedAt: Date.now() });
+		const workspaceless = context.workspaceless || !directories?.length;
+		const cwd = directories?.[0]?.fsPath ?? (await ensureWorkspacelessScratchDir(this.environmentService.userHome, AgentSession.id(context.owner.get()))).fsPath;
+		if (!isAbsolute(cwd)) { throw new Error(localize('nativeCli.workspaceRequired', "Native CLI agents require a local workspace folder.")); }
+		if (workspaceless) { await fs.mkdir(cwd, { recursive: true }); }
+		const model = options?.model ?? this.defaultModel;
+		if (!model) { throw new Error(localize('nativeCli.modelsUnavailable', "Could not read the {0} model catalog. Check its native provider configuration and restart the local agent host.", this.id)); }
+		const entry = this.newEntry(chat, context.resource, { version: 1, provider: this.id, nativeId: this.id === 'zcode' ? `sess_${generateUuid()}` : generateUuid(), cwd, model, workspaceless, persisted: false, createdAt: Date.now(), modifiedAt: Date.now() });
 		return { providerData: JSON.stringify(entry.backing), provisional: true };
 	}
 
@@ -229,6 +263,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			await entry.stopping;
 			if (entry.generation !== generation || entry.disposed || this.closing) { throw new CancellationError(); }
 			if (entry.process) { return entry.process; }
+			if (entry.backing.workspaceless) { await fs.mkdir(entry.backing.cwd, { recursive: true }); }
 			const launch = await nativeCliLaunch(this.id, this.config, entry.backing.cwd);
 			let temporary: string | undefined;
 			if (this.id === 'zcode' && !this.config.executable && launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE?.startsWith('/Applications/')) {
@@ -282,7 +317,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 				if (entry.generation !== generation || entry.process !== connection || entry.disposed || this.closing) { throw new CancellationError(); }
 				entry.backing.persisted = true;
 				this.publish(entry);
-				this.materialized.fire({ chat: entry.uri, result: { providerData: JSON.stringify(entry.backing) }, workingDirectories: [URI.file(entry.backing.cwd)], project: { uri: URI.file(entry.backing.cwd), displayName: entry.backing.cwd.split(/[\\/]/).pop() ?? entry.backing.cwd } });
+				this.materialized.fire({ chat: entry.uri, result: { providerData: JSON.stringify(entry.backing) }, workingDirectories: [URI.file(entry.backing.cwd)], project: entry.backing.workspaceless ? undefined : { uri: URI.file(entry.backing.cwd), displayName: entry.backing.cwd.split(/[\\/]/).pop() ?? entry.backing.cwd } });
 				return connection;
 			} catch (error) {
 				if (entry.process === connection) { entry.process = undefined; }
@@ -302,18 +337,11 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	}
 
 	private updateZcodeModels(snapshot: NativeRecord): void {
-		const available = record(record(snapshot.settings).model).available;
-		if (!Array.isArray(available)) { return; }
-		const discovered: IAgentModelInfo[] = [];
-		for (const item of available) {
-			const model = record(item); const ref = record(model.ref);
-			if (typeof ref.providerId === 'string' && typeof ref.modelId === 'string' && !model.disabledReason) {
-				const reasoning = record(model.reasoning);
-				const levels = (Array.isArray(reasoning.levels) ? reasoning.levels : []).map(record).filter(level => typeof level.value === 'string');
-				discovered.push({ provider: this.id, id: `${ref.providerId}/${ref.modelId}`, name: typeof model.label === 'string' ? model.label : ref.modelId, supportsVision: false, maxContextWindow: typeof model.contextWindow === 'number' ? model.contextWindow : undefined, ...(levels.length ? { configSchema: { type: 'object', properties: { reasoningEffort: { type: 'string', title: localize('nativeCli.reasoningEffort', "Thinking Effort"), enum: levels.map(level => String(level.value)), enumLabels: levels.map(level => String(level.label ?? level.value)), default: typeof reasoning.defaultLevel === 'string' ? reasoning.defaultLevel : String(levels[0].value) } } } } : {}) });
-			}
+		const discovered = zcodeModelCatalog(snapshot).models;
+		if (discovered.length) {
+			const configured = new Map(this.config.models.map(model => [model.id, model.name]));
+			this.catalog.set(discovered.filter(model => !configured.size || configured.has(model.id)).map(model => ({ ...model, name: configured.get(model.id) ?? model.name })), undefined);
 		}
-		if (discovered.length) { this.catalog.set([...this.catalog.get().filter(model => model.id === 'default'), ...discovered], undefined); }
 	}
 
 	private async send(chat: URI, prompt: string, turnId: string, roots: readonly URI[] | undefined, _context: IAgentChatContext): Promise<void> {
@@ -378,7 +406,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		const turn = entry.active;
 		if (entry.stopping || params.sessionId !== entry.backing.nativeId) { throw new CancellationError(); }
 		if (this.id === 'zcode' && method === 'session/requestRuntimePreferences') {
-			return { nativeSearchEnhancementsEnabled: true, toolSearchMode: 'off', memoryEnabled: false, askUserQuestionAutoResolutionEnabled: false, modelContextBudgetStrategy: 'preflight-v1' };
+			return zcodeRuntimePreferences();
 		}
 		if (this.id === 'zcode' && method === 'interaction/requestProviderRuntimeHeaders') {
 			return { headersApplied: false, errorMessage: localize('nativeCli.accountAuthentication', "This ZCode account model requires the desktop authentication bridge. Select an API-key provider configured in ZCode.") };
@@ -479,7 +507,8 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	removeActiveClient(chat: URI, _context: URI | IAgentChatContext, clientId: string): void { this.entries.get(chat.toString())?.clients.delete(clientId); }
 	shutdown(): Promise<void> {
 		this.closing = true;
-		return this.shutdownTask ??= Promise.all([...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })).then(() => { });
+		this.catalogAbort.abort();
+		return this.shutdownTask ??= Promise.all([this.catalogReady, ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })]).then(() => { });
 	}
 	override dispose(): void { void this.shutdown(); super.dispose(); }
 }
