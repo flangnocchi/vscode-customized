@@ -6513,6 +6513,21 @@ suite('CopilotAgent', () => {
 			}
 		});
 
+		test('publishes scoped models while the discovery runtime is still stopping', async () => {
+			const stop = new DeferredPromise<void>();
+			const { agent } = setup(undefined, [], [], undefined, { onClientCreated: client => {
+				client.stop = async () => { client.stopCallCount++; await stop.p; return []; };
+			} });
+			try {
+				const credentials = { getCredential: () => ({ resource: 'https://api.github.com', token: 'caller-token', expiresAt: undefined, revision: 1 }) };
+				const models = await raceTimeout(agent.getModelsForCredentials(credentials), 1000);
+				assert.deepStrictEqual(models?.map(model => model.id), ['gpt-4o']);
+			} finally {
+				stop.complete();
+				await disposeAgent(agent);
+			}
+		});
+
 		test('scoped model catalogs isolate grants and refresh after rotation without changing host models', async () => {
 			const { agent, clients } = setup(undefined, [], [], undefined, {
 				onClientCreated: (client, options) => {

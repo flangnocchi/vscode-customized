@@ -3628,13 +3628,13 @@ export class CopilotAgent extends Disposable implements IAgent {
 						created.catalog = { ...catalog, models };
 						return models;
 					} finally {
-						try {
-							await runtime.stop();
-						} finally {
+						// A valid catalog is ready even if the discovery runtime takes
+						// longer to shut down. Keep owning it until cleanup settles.
+						void runtime.stop().catch(error => this._logService.warn('[Copilot] Model discovery cleanup failed', error)).finally(() => {
 							if (this._scopedModelClients.get(source) === runtime) {
 								this._scopedModelClients.deleteAndDispose(source);
 							}
-						}
+						});
 					}
 				}).catch(error => {
 					if (this._scopedModelCatalogs.get(source) === created) {
