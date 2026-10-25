@@ -654,6 +654,10 @@ An additional chat is backed by a **fresh top-level thread minted eagerly** in `
 
 ---
 
+### Native CLI providers (`node/nativeCli`)
+
+DSH and ZCode are opt-in `IAgent` providers. Each independent chat owns one native stdio process, reused across turns; cancellation closes that process, waits for exit, and resumes the persisted native conversation on its next send. A backing is opaque provider data, never derived from the host session or chat URI. Host membership remains owned by the orchestrator. The adapters retain a provider-owned rendering journal in each chat's supplied storage scope so history reads never start a runtime or claim its native writer lock. Native tools execute in their original harness; unsupported custom-agent, attachment, fork, side-chat, and multi-root controls are not advertised. Native permission and input callbacks route to the shared AHP confirmation/input actions. Settings are forwarded to desktop and Node host starters; application credentials and provider configuration remain native.
+
 ## 7. Session Ownership (T2/T4) — the orchestrator owns the Session
 
 **Status: implemented — AH owns identity, enumeration, lifecycle, and grouping.**

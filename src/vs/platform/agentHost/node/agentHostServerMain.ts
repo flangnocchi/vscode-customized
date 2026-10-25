@@ -6,6 +6,7 @@
 // Standalone agent host server with WebSocket protocol transport.
 // Start with: node out/vs/platform/agentHost/node/agentHostServerMain.js [--port <port>] [--host <host>] [--connection-token <token>] [--connection-token-file <path>] [--without-connection-token] [--enable-mock-agent] [--claude-sdk-root <path>] [--codex-sdk-root <path>] [--quiet] [--log <level>]
 
+import { NativeCliAgent, readNativeCliAgentConfigs } from './nativeCli/nativeCliAgent.js';
 import { fileURLToPath } from 'url';
 
 // This standalone process isn't bootstrapped via bootstrap-esm.ts, so we must
@@ -233,6 +234,13 @@ async function main(): Promise<void> {
 	if (!options.quiet) {
 		sdkDownloadProgress = runtime.sdkDownloadProgress;
 		providerService.registerProvider(instantiationService.createInstance(CopilotAgent));
+		try {
+			for (const [id, config] of readNativeCliAgentConfigs(process.env)) {
+				providerService.registerProvider(instantiationService.createInstance(NativeCliAgent, id, config));
+			}
+		} catch (error) {
+			logService.error('Failed to configure native CLI agents', error);
+		}
 		log('CopilotAgent registered');
 		// Claude and Codex providers are gated on two things:
 		//  1. The user-facing enable toggle (`chat.agentHost.<x>Agent.enabled`,
