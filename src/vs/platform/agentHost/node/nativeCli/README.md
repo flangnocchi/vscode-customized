@@ -61,11 +61,31 @@ DSH emits committed SDK session events; its native SDK does not currently expose
 
 DSH native plugins can handle slash commands locally. Their `command/done` feedback is rendered and saved even when no assistant message or model request is produced. Native command autocomplete is not currently forwarded to VS Code.
 
+## Customization inventory
+
+Skills come from the owning native registry, rather than a scan of Claude's folders or the VS Code shared catalog. DSH uses a temporary observation-only profile overlay to call `skills.snapshot`; the overlay is removed after discovery and no bundle is installed. ZCode uses the workspace `skills/referenceCatalog` method. Neither path creates, resumes or prompts a native conversation. Native validation, precedence, custom roots and symbolic links therefore remain authoritative. File-backed entries retain their real file URIs; pathless DSH entries are read-only built-ins. Incomplete DSH observations fail discovery instead of publishing an authoritative empty inventory.
+
+DSH also reports baseline instruction candidates through the installed instruction plugin's own discovery function, respecting whether that plugin is enabled and its configured filenames. Instructions encountered later while visiting nested directories are not an exhaustive baseline catalog. These native directories are not advertised as destinations for VS Code creation or enablement management. Restart the local agent host after changing native profile configuration or installing native customizations; filesystem-driven live catalog refresh is not yet connected.
+
+The remaining customization sections have separate integration boundaries:
+
+| Section | Native CLI integration |
+| --- | --- |
+| Skills | Native DSH and ZCode inventories are displayed. |
+| Instructions | DSH baseline discovery is displayed. ZCode instruction inventory is not connected. |
+| Agents | Native agent selection and native plugin agent inventories are not connected. |
+| Hooks | Native hook manifests and lifecycle management are not connected. |
+| MCP Servers | Native harness configuration still governs execution; native status inventory and VS Code server controls are not connected. VS Code collections are not proof that the native harness loaded those servers. |
+| Plugins | DSH Cordis modules are not Open Plugins. ZCode has a native `plugins/list` API, but its inventory and management are not connected to this view. |
+| Models | Uses the independent native model catalog described above. |
+
+An empty section outside the connected inventory above does not establish that the native harness has no such customization. VS Code shared customization enablement is not forwarded to either native CLI.
+
 ## Validation
 
 ```sh
 npm run build-fast -- --client-only
-VSCODE_SKIP_PRELAUNCH=1 ./scripts/test.sh --run src/vs/platform/agentHost/test/node/nativeCliAgent.test.ts --run src/vs/platform/agentHost/test/node/nativeCliModelCatalog.test.ts
+VSCODE_SKIP_PRELAUNCH=1 ./scripts/test.sh --run src/vs/platform/agentHost/test/node/nativeCliAgent.test.ts --run src/vs/platform/agentHost/test/node/nativeCliModelCatalog.test.ts --run src/vs/platform/agentHost/test/node/nativeCliCustomizations.test.ts
 ```
 
 The tests use actual child processes and an in-memory session database. They cover process reuse, per-chat cancellation, startup cancellation, native resume, saved-history restoration, approval decisions, response reconciliation and connection failure. Native runtime acceptance should additionally use isolated DSH/ZCode homes and a loopback model endpoint to exercise the installed protocol versions without changing application credentials.

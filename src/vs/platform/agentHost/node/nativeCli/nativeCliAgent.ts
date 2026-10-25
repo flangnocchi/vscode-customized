@@ -25,6 +25,7 @@ import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } 
 import { NativeCliTurn } from './nativeCliTurn.js';
 import { ensureWorkspacelessScratchDir } from '../workspacelessScratchDir.js';
 import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
+import { discoverNativeCliCustomizations } from './nativeCliCustomizations.js';
 
 interface IBacking {
 	version: 1;
@@ -120,6 +121,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	private closing = false;
 	private readonly catalogAbort = new AbortController();
 	private readonly catalogReady: Promise<void>;
+	private readonly customizationRequests = new Map<string, Promise<readonly Customization[]>>();
 	private defaultModel: ModelSelection | undefined;
 
 	constructor(
@@ -492,7 +494,20 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	async resolveChatConfig() { return { schema: { type: 'object' as const, properties: {} }, values: {} }; }
 	getInheritedChatConfig() { return undefined; }
 	async chatConfigCompletions() { return { items: [] }; }
-	async getChatCustomizations(): Promise<readonly Customization[]> { return []; }
+	async getChatCustomizations(chat: URI, context: URI | IAgentChatContext): Promise<readonly Customization[]> {
+		if (this.closing) { throw new CancellationError(); }
+		const resolved = resolveAgentChatContext(context, chat);
+		// Discovery also serves ambient/draft scopes. Never provision a backing or
+		// create a scratch folder just to inspect the native customization registry.
+		const cwd = this.entries.get(chat.toString())?.backing.cwd ?? resolved.launchWorkingDirectories?.find(root => root.scheme === 'file')?.fsPath ?? this.environmentService.userHome.fsPath;
+		let request = this.customizationRequests.get(cwd);
+		if (!request) {
+			request = (async () => discoverNativeCliCustomizations(this.id, await nativeCliLaunch(this.id, this.config, cwd), this.catalogAbort.signal))();
+			this.customizationRequests.set(cwd, request);
+		}
+		try { return await request; }
+		finally { if (this.customizationRequests.get(cwd) === request) { this.customizationRequests.delete(cwd); } }
+	}
 	async listChatsToMigrate() { return []; }
 	getProtectedResources() { return []; }
 	async authenticate() { return false; }
@@ -508,7 +523,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	shutdown(): Promise<void> {
 		this.closing = true;
 		this.catalogAbort.abort();
-		return this.shutdownTask ??= Promise.all([this.catalogReady, ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })]).then(() => { });
+		return this.shutdownTask ??= Promise.all([this.catalogReady, ...[...this.customizationRequests.values()].map(request => request.catch(() => { })), ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })]).then(() => { });
 	}
 	override dispose(): void { void this.shutdown(); super.dispose(); }
 }
