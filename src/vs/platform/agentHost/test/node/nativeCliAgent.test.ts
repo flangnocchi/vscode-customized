@@ -4,6 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { upcastPartial } from '../../../../base/test/common/mock.js';
+import { IAgentConfigurationService } from '../../node/agentConfigurationService.js';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../base/common/path.js';
@@ -78,7 +80,7 @@ suite('Native CLI agents', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	function agent(id: NativeCliAgentId): NativeCliAgent {
-		return store.add(new NativeCliAgent(id, config, data, new NullLogService(), { userHome: URI.file(tmpdir()) } as INativeEnvironmentService));
+		return store.add(new NativeCliAgent(id, config, data, new NullLogService(), { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined })));
 	}
 
 	async function create(provider: NativeCliAgent, suffix: string): Promise<URI> {
@@ -94,7 +96,7 @@ suite('Native CLI agents', () => {
 	for (const dialect of ['dsh', 'zcode'] as const) {
 		test(`${dialect}: a workspaceless chat sends and resumes in its stable scratch folder`, async () => {
 			const home = await fs.mkdtemp(join(tmpdir(), 'native-cli-workspaceless-'));
-			const provider = store.add(new NativeCliAgent(dialect, config, data, new NullLogService(), { userHome: URI.file(home) } as INativeEnvironmentService));
+			const provider = store.add(new NativeCliAgent(dialect, config, data, new NullLogService(), { userHome: URI.file(home) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined })));
 			const chat = URI.parse(`ahp-chat:/${dialect}-workspaceless`);
 			const ctx = { ...context(chat), launchWorkingDirectories: undefined, workspaceless: true };
 			let project: unknown;

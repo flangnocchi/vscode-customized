@@ -5,12 +5,13 @@
 
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
+import { language } from '../../../../base/common/platform.js';
 import { join } from '../../../../base/common/path.js';
 import { toDisposable, type IDisposable } from '../../../../base/common/lifecycle.js';
 import type { NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import type { INativeCliLaunch } from './nativeCliTransport.js';
 
-/** Observation extensions stay inside the owning child process, never in installed SDK files. */
+/** SDK extensions stay inside the owning child process, never in installed SDK files. */
 export const dshRuntimeObserver = String.raw`
 import { writeFile } from 'node:fs/promises';
 export const name = 'vscode-runtime-observer';
@@ -33,7 +34,9 @@ export async function snapshot(ctx, cwd, agent) {
  const tools = (registry?.schemas(agent) ?? []).map(tool => ({ name: tool.name, description: tool.description,
   loading: mode === 'ptc' && tool.name !== 'run_code' ? 'binding' : tool.deferLoading ? 'deferred' : 'eager',
   source: tool.name.startsWith('mcp__') ? 'mcp' : 'builtin' }));
- return { ...skills, instructions, tools, plugins, scope: agent ? 'chat' : 'workspace' };
+ const presets = ctx.get('permissionPresets'), catalog = presets?.catalog();
+ const permissions = catalog ? { options: catalog.options.map(p => ({ id: p.value, name: p.name, description: p.description })), defaultMode: catalog.defaultPreset } : undefined;
+ return { ...skills, instructions, tools, plugins, permissions, scope: agent ? 'chat' : 'workspace' };
 }
 export function apply(ctx) {
  setImmediate(async () => {
@@ -54,11 +57,26 @@ export function apply(ctx) {
     this.disposers.push(ctx.on('tools/change', () => {
      for (const sessionId of this.sessions.keys()) this.transport.notify('vscode/runtimeInventoryChanged', { sessionId });
     }));
+    this.disposers.push(ctx.on('approval/request', async req => {
+     if (this.sessions.size !== 1 || typeof req.callId !== 'string') return 'unavailable';
+     const sessionId = this.sessions.keys().next().value;
+     const display = req.displayReason;
+     const reason = typeof display === 'string' ? display : display?.[(process.env.VSCODE_NATIVE_UI_LANGUAGE ?? 'en').startsWith('zh') ? 'zh' : 'en'] ?? req.reason;
+     const result = await this.transport.request('approval/request', { sessionId, toolCallId: req.callId,
+      toolName: req.toolName, input: { reason }, reason }, req.signal);
+     return ['allowed-once', 'rejected', 'cancelled', 'unavailable'].includes(result?.outcome) ? result.outcome : 'unavailable';
+    }));
    }
-   if (method !== 'vscode/runtimeInventory') return original.call(this, method, params);
+   if (method !== 'vscode/runtimeInventory' && method !== 'vscode/setPermissionMode') return original.call(this, method, params);
    const session = this.sessions.get(params.sessionId);
    if (!session) throw new Error('Unknown native session');
    const agent = session.handle.agent;
+   if (method === 'vscode/setPermissionMode') {
+    const presets = ctx.get('permissionPresets');
+    if (!presets) throw new Error('Native permission presets are unavailable');
+    presets.set(agent.session, params.mode);
+    return { mode: presets.current(agent.session) };
+   }
    return snapshot(ctx, this.cwd, agent);
   };
   ctx.effect(() => () => { Server.prototype.handleRequest = original; });
@@ -67,7 +85,7 @@ export function apply(ctx) {
 `;
 
 // ZCode does not expose its model-facing tool registry over stdio. This bounded
-// CommonJS observation hook adds one read-only method to supported dispatchers.
+// CommonJS extension adds inventory and exact-chat permission methods to supported dispatchers.
 // It retains the original filename/resolution and fails closed on changed SDKs.
 export const zcodeRuntimeObserver = String.raw`
 const Module = require('node:module');
@@ -78,7 +96,13 @@ Module.prototype._compile = function(source, filename) {
   const matches = [...source.matchAll(marker)];
   if (matches.length !== 1) { Module.prototype._compile = original; return original.call(this, source, filename); }
   const match = matches[0], request = match[2];
-  const extension = "case 'vscode/runtimeInventory': {" +
+  const modeSchemas = [...source.matchAll(/\b[\w$]+=[\w$]+\.object\(\{sessionId:[\w$]+,mode:(?<mode>[\w$]+),expectedRevision:/g)];
+  const permissionModes = modeSchemas.length === 1 ? modeSchemas[0].groups.mode + '.options' : '[]';
+  const extension = "case 'vscode/setPermissionMode': {const params=" + request + ".params;" +
+   "const session=this.context.sessions.get(params.sessionId);if(!session)throw new Error('Unknown native session');" +
+   "if(!" + permissionModes + ".includes(params.mode))throw new Error('Unknown native permission mode');" +
+   "const runtime=session.app.runtime;await runtime.setExecutionState({mode:params.mode,planEnabled:params.mode==='plan'},runtime.rootTraceContext);return {mode:runtime.getPlanEnabled?.()?'plan':runtime.getMode()};}" +
+   "case 'vscode/runtimeInventory': {" +
    "const params=" + request + ".params; const session=this.context.sessions.get(params.sessionId);" +
    "if(!session)throw new Error('Unknown native session');" +
    "const skills=await session.app.getSkillCatalog(); const runtime=session.app.runtime;" +
@@ -96,7 +120,7 @@ Module.prototype._compile = function(source, filename) {
    "const mcpServers=runtime.mcpPort?await runtime.mcpPort.status():{};" +
    "const userInstructions=runtime.contextSourceSnapshot?.userInstructions;" +
    "const instructions=[...(userInstructions?.sources??[]),userInstructions].filter(s=>typeof s?.filePath==='string').map(s=>({absolutePath:s.filePath}));" +
-   "return {complete:true,scope:'chat',skills:skills.skills,tools,agents,mcpServers,instructions}; }";
+   "return {complete:true,scope:'chat',skills:skills.skills,tools,agents,mcpServers,instructions,permissions:{options:" + permissionModes + ".map(id=>({id,name:id})),defaultMode:runtime.getPlanEnabled?.()?'plan':runtime.getMode()}}; }";
   source = source.slice(0, match.index) + extension + source.slice(match.index);
   Module.prototype._compile = original;
  }
@@ -119,7 +143,7 @@ export async function observeNativeCliRuntime(id: NativeCliAgentId, launch: INat
 			const patch = join(temporary, 'observer.yml');
 			const entries = [{ id: 'vscode-runtime-observer', name: script }];
 			await fs.writeFile(patch, `- insert: ${JSON.stringify(entries)}\n`, { mode: 0o600 });
-			observed = { ...launch, args: [...launch.args, '--patch', patch] };
+			observed = { ...launch, args: [...launch.args, '--patch', patch], env: { ...launch.env, VSCODE_NATIVE_UI_LANGUAGE: language } };
 		} else {
 			const target = launch.args.find(arg => /(?:^|[/\\])zcode\.cjs$/.test(arg));
 			// Custom executables may implement the extension themselves. Do not

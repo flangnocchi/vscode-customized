@@ -180,5 +180,10 @@ async function readZcodeCustomizations(launch: INativeCliLaunch, signal: AbortSi
 }
 
 export async function discoverNativeCliCustomizations(id: NativeCliAgentId, launch: INativeCliLaunch, signal: AbortSignal, modelSelection?: NativeRecord): Promise<readonly Customization[]> {
-	return nativeCliCustomizations(id, await (id === 'dsh' ? readDshCustomizations(launch, signal) : readZcodeCustomizations(launch, signal, modelSelection)));
+	return nativeCliCustomizations(id, await discoverNativeCliRuntimeSnapshot(id, launch, signal, modelSelection));
+}
+
+/** Reads metadata in a disposable runtime, without claiming a chat backing. */
+export async function discoverNativeCliRuntimeSnapshot(id: NativeCliAgentId, launch: INativeCliLaunch, signal: AbortSignal, modelSelection?: NativeRecord): Promise<NativeRecord> {
+	return id === 'dsh' ? readDshCustomizations(launch, signal) : readZcodeCustomizations(launch, signal, modelSelection);
 }
