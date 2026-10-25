@@ -19,6 +19,7 @@ import { FileService } from '../../../../../../platform/files/common/fileService
 import { NullLogService } from '../../../../../../platform/log/common/log.js';
 import { CustomizationType, type AgentCustomization, type ClientPluginCustomization, type Customization, type PluginCustomization } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { CustomizationEnablementKind } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
+import { withRuntimePlugins } from '../../../../../../platform/agentHost/common/meta/runtimeToolInventory.js';
 import { AgentCustomizationItemProvider } from '../../../browser/agentSessions/agentHost/agentCustomizationItemProvider.js';
 import { NullAgentHostCustomizationService } from '../../../browser/agentSessions/agentHost/agentHostCustomizationService.js';
 import { AICustomizationSources } from '../../../common/aiCustomizationWorkspaceService.js';
@@ -37,6 +38,23 @@ function makePromptsService(): IPromptsService {
 
 suite('AgentCustomizationItemProvider', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('keeps shared catalog entries alongside passive native plugins', async () => {
+		class TestCustomizationService extends NullAgentHostCustomizationService {
+			override getCustomizations(): readonly Customization[] {
+				return [{
+					type: CustomizationType.Directory, id: 'shared', uri: 'file:///workspace/.github/skills', name: 'Shared', contents: CustomizationType.Skill, enabled: true, writable: true,
+					children: [{ type: CustomizationType.Skill, id: 'shared-skill', uri: 'file:///workspace/.github/skills/review/SKILL.md', name: 'Shared Skill' }],
+					_meta: withRuntimePlugins(undefined, [{ id: 'native:documents', name: 'documents', enabled: true, status: 'loaded' }]),
+				}];
+			}
+		}
+		const provider = disposables.add(new AgentCustomizationItemProvider('local', undefined, undefined, upcastPartial<IFileService>({}), new NullLogService(), new TestCustomizationService(), makePromptsService()));
+		const items = await provider.provideChatSessionCustomizations(URI.parse('agent-host-dsh:///session'), CancellationToken.None);
+		assert.deepStrictEqual(items.map(item => ({ name: item.name, type: item.type, ...(item.type === 'plugin' ? { actions: item.actions, status: item.status } : {}) })), [
+			{ name: 'documents', type: 'plugin', actions: [], status: 'loaded' }, { name: 'Shared Skill', type: PromptsType.skill },
+		]);
+	});
 
 	test('provides synced client tools and MCP namespaces without runtime discovery', async () => {
 		let inventoryReads = 0;

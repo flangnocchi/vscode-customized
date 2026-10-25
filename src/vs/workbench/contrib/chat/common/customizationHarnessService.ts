@@ -170,6 +170,8 @@ export interface IHarnessDescriptor {
 	 * section is hidden.
 	 */
 	readonly hiddenSections?: readonly string[];
+	/** The Tools page shows the provider's observed registry rather than the VS Code tool catalog. */
+	readonly usesRuntimeToolInventory?: boolean;
 	/**
 	 * When `true`, the "Generate with AI" sparkle button is hidden and replaced
 	 * with a plain "New X" manual-creation button (like sessions).

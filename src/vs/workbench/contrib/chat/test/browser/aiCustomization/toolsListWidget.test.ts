@@ -6,10 +6,19 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../../base/test/common/utils.js';
 import { CustomizationToggle } from '../../../browser/aiCustomization/customizationToggle.js';
-import { isToolsTreeKeyboardTarget } from '../../../browser/aiCustomization/toolsListWidget.js';
+import { createRuntimeToolSets, isToolsTreeKeyboardTarget } from '../../../browser/aiCustomization/toolsListWidget.js';
 
 suite('toolsListWidget', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('runtime sets retain confirmed VS Code and MCP tools and do not substitute Copilot tools', () => {
+		const sets = createRuntimeToolSets({ provider: 'test', label: 'Test', state: 'ready', scope: 'chat', tools: [
+			{ name: 'NativeRead', loading: 'eager', source: 'builtin' },
+			{ name: 'SharedRead', loading: 'eager', source: 'vscode' },
+			{ name: 'RemoteSearch', loading: 'deferred', source: 'mcp' },
+		] });
+		assert.deepStrictEqual({ names: sets.flatMap(set => [...set.getTools()].map(tool => tool.displayName)), nativeIds: sets.every(set => set.id.startsWith('runtime:')), unknown: createRuntimeToolSets(undefined) }, { names: ['NativeRead', 'SharedRead', 'RemoteSearch'], nativeIds: true, unknown: [] });
+	});
 
 	test('handles tree keys only from the row itself', () => {
 		const row = document.createElement('div');

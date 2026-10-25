@@ -25,7 +25,8 @@ import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } 
 import { NativeCliTurn } from './nativeCliTurn.js';
 import { ensureWorkspacelessScratchDir } from '../workspacelessScratchDir.js';
 import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
-import { discoverNativeCliCustomizations } from './nativeCliCustomizations.js';
+import { discoverNativeCliCustomizations, nativeCliCustomizations } from './nativeCliCustomizations.js';
+import { observeNativeCliRuntime } from './nativeCliRuntime.js';
 
 interface IBacking {
 	version: 1;
@@ -113,6 +114,8 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	readonly onDidMaterializeChat = this.materialized.event;
 	private readonly changed = this._register(new Emitter<IAgentChatDataChange>());
 	readonly onDidChangeChatData = this.changed.event;
+	private readonly customizationsChanged = this._register(new Emitter<void>());
+	readonly onDidCustomizationsChange = this.customizationsChanged.event;
 	private readonly catalog = observableValue<readonly IAgentModelInfo[]>(this, []);
 	readonly models = this.catalog;
 	private readonly entries = new Map<string, IChat>();
@@ -280,10 +283,17 @@ export class NativeCliAgent extends Disposable implements IAgent {
 				if (temporary) { await fs.rm(temporary, { recursive: true, force: true }); }
 				throw new CancellationError();
 			}
-			const connection = new NativeCliTransport(launch);
+			const observer = !this.config.executable || launch.args.includes('--profile') || launch.args.some(arg => arg.endsWith('/zcode.cjs')) ? await observeNativeCliRuntime(this.id, launch) : undefined;
+			if (entry.generation !== generation || entry.disposed || this.closing) {
+				observer?.dispose();
+				if (temporary) { await fs.rm(temporary, { recursive: true, force: true }); }
+				throw new CancellationError();
+			}
+			const connection = new NativeCliTransport(observer?.launch ?? launch);
 			entry.process = connection;
 			const store = entry.processStore = new DisposableStore();
 			store.add(connection);
+			if (observer) { store.add(observer); }
 			if (temporary) {
 				const directory = temporary;
 				store.add(toDisposable(() => { void fs.rm(directory, { recursive: true, force: true }).catch(error => this.logService.warn('Native agent temporary cleanup failed', error)); }));
@@ -381,10 +391,15 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			if (entry.active === turn) { entry.active = undefined; entry.completion = undefined; }
 			await this.save(entry, true);
 			this.publish(entry);
+			this.customizationsChanged.fire();
 		}
 	}
 
 	private notification(entry: IChat, connection: NativeCliTransport, method: string, params: NativeRecord): void {
+		if (entry.process === connection && !entry.stopping && method === 'vscode/runtimeInventoryChanged' && params.sessionId === entry.backing.nativeId) {
+			this.customizationsChanged.fire();
+			return;
+		}
 		if (entry.process !== connection || entry.stopping || !entry.active) { return; }
 		if (this.id === 'dsh' && method === 'session.event' && params.sessionId === entry.backing.nativeId) {
 			const event = record(params.event);
@@ -500,13 +515,29 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		// Discovery also serves ambient/draft scopes. Never provision a backing or
 		// create a scratch folder just to inspect the native customization registry.
 		const cwd = this.entries.get(chat.toString())?.backing.cwd ?? resolved.launchWorkingDirectories?.find(root => root.scheme === 'file')?.fsPath ?? this.environmentService.userHome.fsPath;
-		let request = this.customizationRequests.get(cwd);
+		const entry = this.entries.get(chat.toString());
+		const key = chat.toString();
+		let request = this.customizationRequests.get(key);
 		if (!request) {
-			request = (async () => discoverNativeCliCustomizations(this.id, await nativeCliLaunch(this.id, this.config, cwd), this.catalogAbort.signal))();
-			this.customizationRequests.set(cwd, request);
+			request = entry?.process
+				? (async () => {
+					const connection = entry.process!;
+					let snapshot: NativeRecord;
+					try { snapshot = record(await connection.request('vscode/runtimeInventory', { sessionId: entry.backing.nativeId, ...(this.id === 'zcode' ? { modelSelection: this.zcodeModel(entry.backing.model) } : {}) }, 15_000)); }
+					catch {
+						if (this.id === 'dsh') { return discoverNativeCliCustomizations(this.id, await nativeCliLaunch(this.id, this.config, cwd), this.catalogAbort.signal); }
+						const skills = record(await connection.request('skills/referenceCatalog', { workspace: { workspacePath: cwd, workspaceKey: cwd } }, 15_000));
+						snapshot = { ...skills, scope: 'chat', tools: [], toolsState: 'unavailable' };
+					}
+					if (this.id === 'zcode') { snapshot.plugins = record(await connection.request('plugins/list', { workspace: { workspacePath: cwd, workspaceKey: cwd } }, 15_000)).plugins; }
+					if (entry.process !== connection || entry.stopping || this.closing) { throw new CancellationError(); }
+					return nativeCliCustomizations(this.id, snapshot);
+				})()
+				: (async () => discoverNativeCliCustomizations(this.id, await nativeCliLaunch(this.id, this.config, cwd), this.catalogAbort.signal, this.id === 'zcode' && entry ? this.zcodeModel(entry.backing.model) : undefined))();
+			this.customizationRequests.set(key, request);
 		}
 		try { return await request; }
-		finally { if (this.customizationRequests.get(cwd) === request) { this.customizationRequests.delete(cwd); } }
+		finally { if (this.customizationRequests.get(key) === request) { this.customizationRequests.delete(key); } }
 	}
 	async listChatsToMigrate() { return []; }
 	getProtectedResources() { return []; }

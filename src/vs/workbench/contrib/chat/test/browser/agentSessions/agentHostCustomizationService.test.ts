@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { withRuntimeManagedCustomization } from '../../../../../../platform/agentHost/common/meta/runtimeToolInventory.js';
 import { DeferredPromise, timeout } from '../../../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
@@ -204,6 +205,18 @@ suite('AbstractAgentHostCustomizationService', () => {
 		options.configure?.(instantiationService);
 		return store.add(new TestAgentHostCustomizationService(instantiationService, new NullLogService()));
 	}
+
+	test('keeps runtime-managed MCP observations read-only at the service boundary', async () => {
+		const sut = createSut();
+		const session = URI.parse('vscode-agent-session:///session-1');
+		const target = new FakeTarget([{ ...mcpServer('native', 'Native'), _meta: withRuntimeManagedCustomization(undefined) }]);
+		sut.setTarget(session, target);
+		const [server] = sut.getMcpServers(session);
+		server.setEnabled(false);
+		await server.start();
+		await server.stop();
+		assert.deepStrictEqual({ readOnly: server.readOnly, sourceUri: server.sourceUri, enablementChanges: target.enablementChanges, operations: target.operationLog }, { readOnly: true, sourceUri: undefined, enablementChanges: [], operations: [] });
+	});
 
 	test('backgrounds blocking servers through the required target operation', async () => {
 		const sut = createSut();

@@ -26,6 +26,7 @@ import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { localize } from '../../../../../nls.js';
 import { CustomizationType, McpServerStatus, type PluginCustomization } from '../../../../../platform/agentHost/common/state/protocol/state.js';
+import { readRuntimeToolInventory, type IRuntimeToolInventory } from '../../../../../platform/agentHost/common/meta/runtimeToolInventory.js';
 import { ExtensionIdentifier } from '../../../../../platform/extensions/common/extensions.js';
 import { IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
@@ -75,6 +76,7 @@ interface IToolSetViewModel {
 	readonly readOnly: boolean;
 	/** Precomputed subtitle (own `detail`, or an extension description) shown under the set's name. */
 	readonly detail?: string;
+	readonly availabilityLabel?: string;
 }
 
 //#region Virtualized tool rows
@@ -375,6 +377,7 @@ class ToolsToolRowRenderer implements IListRenderer<IToolsToolRowEntry, IToolsTo
 		data.subtext.style.display = description ? '' : 'none';
 		data.subtext.textContent = description ?? '';
 		data.alwaysAvailable.style.display = setVm.readOnly ? '' : 'none';
+		data.alwaysAvailable.textContent = setVm.availabilityLabel ?? localize('toolsAlwaysAvailable', "Always Available");
 		data.toggle.domNode.style.display = setVm.readOnly ? 'none' : '';
 
 		if (!setVm.readOnly) {
@@ -519,10 +522,37 @@ class ToolsConnectedRowRenderer implements IListRenderer<IToolsConnectedRowEntry
 
 const TOOLS_MARKETPLACE_QUERY = '@tag:language-model-tools';
 
+function runtimeToolLoadingLabel(loading: string): string {
+	switch (loading) {
+		case 'deferred': return localize('runtimeToolOnDemand', "On Demand");
+		case 'binding': return localize('runtimeToolBinding', "Callable via Code");
+		case 'unavailable': return localize('runtimeToolUnavailable', "Unavailable");
+		default: return localize('runtimeToolLoaded', "Loaded");
+	}
+}
+
+/** Builds read-only sets from an observed registry; never substitutes VS Code's installed tools. */
+export function createRuntimeToolSets(inventory: IRuntimeToolInventory | undefined): readonly IToolSet[] {
+	if (!inventory || inventory.state !== 'ready') { return []; }
+	const groups = new Map<string, { source: string; loading: string; tools: IToolData[] }>();
+	for (const tool of inventory.tools) {
+		const source = tool.sourceName ?? (tool.source === 'mcp' ? localize('runtimeMcpTools', "MCP") : tool.source === 'vscode' ? 'VS Code' : inventory.label);
+		const id = `runtime:${tool.source}:${tool.loading}:${encodeURIComponent(source)}`;
+		let group = groups.get(id);
+		if (!group) { group = { source, loading: tool.loading, tools: [] }; groups.set(id, group); }
+		group.tools.push({ id: `${id}:${encodeURIComponent(tool.name)}`, displayName: tool.name, modelDescription: tool.description ?? '', source: ToolDataSource.Internal, canBeReferencedInPrompt: false });
+	}
+	return [...groups].map(([id, group]) => ({ id, referenceName: id, icon: Codicon.tools, source: ToolDataSource.Internal, description: group.source, detail: inventory.scope === 'workspace' && group.loading === 'eager' ? localize('runtimeToolAvailable', "Available") : runtimeToolLoadingLabel(group.loading), getTools: () => group.tools }));
+}
+
 /** A searchable tree of agent tool sets and session-published plugins and MCP servers. */
 export class ToolsListWidget extends Disposable {
 
 	readonly element: HTMLElement;
+	private _descriptionText!: HTMLElement;
+	private _runtimeInventoryOnly = false;
+	private _runtimeInventoryUnavailable = false;
+	private _runtimeInventoryReady = false;
 
 	private readonly _onDidChangeItemCount = this._register(new Emitter<number>());
 	readonly onDidChangeItemCount = this._onDidChangeItemCount.event;
@@ -599,10 +629,11 @@ export class ToolsListWidget extends Disposable {
 		const connectedModel = derived(this, reader => {
 			this._agentHostCustomizationsChanged.read(reader);
 			const sessionResource = this._harnessService.activeSessionResource.read(reader);
+			const runtimeOnly = this._harnessService.findHarnessById(this._harnessService.activeHarness.read(reader))?.usesRuntimeToolInventory === true;
 			return {
 				sessionResource,
-				servers: this._agentHostCustomizationService.getMcpServers(sessionResource),
-				plugins: this._agentHostCustomizationService.getCustomizations(sessionResource).filter(customization => customization.type === CustomizationType.Plugin),
+				servers: runtimeOnly ? [] : this._agentHostCustomizationService.getMcpServers(sessionResource),
+				plugins: runtimeOnly ? [] : this._agentHostCustomizationService.getCustomizations(sessionResource).filter(customization => customization.type === CustomizationType.Plugin),
 			};
 		});
 		this._register(autorun(reader => {
@@ -659,6 +690,15 @@ export class ToolsListWidget extends Disposable {
 		}));
 		this._register(autorun(reader => {
 			this._currentModel = viewModel.read(reader);
+			this._runtimeInventoryOnly = this._harnessService.findHarnessById(this._harnessService.activeHarness.read(reader))?.usesRuntimeToolInventory === true;
+			const inventory = this._runtimeInventoryOnly ? readRuntimeToolInventory(this._agentHostCustomizationService.getCustomizations(this._harnessService.activeSessionResource.read(reader))) : undefined;
+			this._runtimeInventoryUnavailable = inventory?.state === 'unavailable';
+			this._runtimeInventoryReady = inventory?.state === 'ready';
+			this._descriptionText.textContent = this._runtimeInventoryOnly
+				? inventory?.scope === 'workspace'
+					? localize('runtimeToolsPreviewSubtitle', "Tools this agent is configured to load. An active chat reports its own current tool set.")
+					: localize('runtimeToolsSubtitle', "Tools exposed by the current agent. This list updates as the agent loads tools, including MCP tools after connection.")
+				: localize('toolsListSubtitle', "Enable or disable the tools available to chat. Disabled tools are not advertised to the agent. Tools other than Copilot's built-in tools run on the client and require it to be connected.");
 			connectedModel.read(reader);
 			this._agentPluginService.plugins.read(reader);
 			this._expanded.read(reader);
@@ -667,7 +707,10 @@ export class ToolsListWidget extends Disposable {
 		}));
 		this._register(autorun(reader => {
 			// Badge counts enabled individual tools across all visible sets, ignoring the search filter.
-			const count = countEnabledCustomizationTools(this._toolsService.toolSets.read(reader), this._readState(reader), reader);
+			this._agentHostCustomizationsChanged.read(reader);
+			const runtimeOnly = this._harnessService.findHarnessById(this._harnessService.activeHarness.read(reader))?.usesRuntimeToolInventory === true;
+			const inventory = runtimeOnly ? readRuntimeToolInventory(this._agentHostCustomizationService.getCustomizations(this._harnessService.activeSessionResource.read(reader))) : undefined;
+			const count = runtimeOnly ? inventory?.tools.filter(tool => tool.loading !== 'unavailable').length ?? 0 : countEnabledCustomizationTools(this._toolsService.toolSets.read(reader), this._readState(reader), reader);
 			if (count !== this._lastCount) {
 				this._lastCount = count;
 				this._onDidChangeItemCount.fire(count);
@@ -684,7 +727,8 @@ export class ToolsListWidget extends Disposable {
 		DOM.append(DOM.append(this._header, $('.section-title-row')), $('h2.section-title')).textContent = localize('toolsListTitle', "Tools");
 
 		const description = DOM.append(this._header, $('p.section-title-description'));
-		DOM.append(description, $('span.section-title-description-text')).textContent = localize('toolsListSubtitle', "Enable or disable the tools available to chat. Disabled tools are not advertised to the agent. Tools other than Copilot's built-in tools run on the client and require it to be connected.");
+		this._descriptionText = DOM.append(description, $('span.section-title-description-text'));
+		this._descriptionText.textContent = localize('toolsListSubtitle', "Enable or disable the tools available to chat. Disabled tools are not advertised to the agent. Tools other than Copilot's built-in tools run on the client and require it to be connected.");
 		// Whitespace node so the gap collapses when the link wraps.
 		description.appendChild(document.createTextNode(' '));
 
@@ -832,6 +876,12 @@ export class ToolsListWidget extends Disposable {
 		return derived(reader => {
 			extensionsChanged.read(reader);
 			const query = this._searchQuery.read(reader).trim();
+			const runtimeOnly = this._harnessService.findHarnessById(this._harnessService.activeHarness.read(reader))?.usesRuntimeToolInventory === true;
+			if (runtimeOnly) {
+				this._agentHostCustomizationsChanged.read(reader);
+				const inventory = readRuntimeToolInventory(this._agentHostCustomizationService.getCustomizations(this._harnessService.activeSessionResource.read(reader)));
+				return createRuntimeToolSets(inventory).map(set => this._toViewModel(reader, set, query)).filter((set): set is IToolSetViewModel => set !== undefined);
+			}
 
 			const result: IToolSetViewModel[] = [];
 			for (const ts of [...this._toolsService.toolSets.read(reader), ...this._staticReadOnlySets]) {
@@ -889,7 +939,8 @@ export class ToolsListWidget extends Disposable {
 			visibleTools,
 			nameMatches,
 			forceExpanded: query !== '',
-			readOnly: ts.id === 'copilot-cli',
+			readOnly: ts.id === 'copilot-cli' || ts.id.startsWith('runtime:'),
+			availabilityLabel: ts.id.startsWith('runtime:') ? ts.detail : undefined,
 			detail: this._resolveSetDetail(ts)
 		};
 	}
@@ -927,7 +978,9 @@ export class ToolsListWidget extends Disposable {
 			return;
 		}
 		const query = this._searchQuery.get().trim();
-		const groups = [
+		const groups = (this._runtimeInventoryOnly ? [
+			this._createTreeGroup('runtime', localize('runtimeToolsSection', "Runtime Tools"), localize('runtimeToolsSectionDescription', "Tools reported by the active agent."), this._runtimeInventoryUnavailable ? localize('runtimeToolsUnavailable', "This agent could not report its tool inventory.") : this._runtimeInventoryReady ? localize('runtimeToolsEmpty', "This agent currently exposes no tools.") : localize('runtimeToolsPending', "Waiting for the agent's tool inventory."), this._currentModel),
+		] : [
 			this._createTreeGroup(
 				'builtin',
 				localize('builtInToolsSection', "Built-in Tools"),
@@ -943,7 +996,7 @@ export class ToolsListWidget extends Disposable {
 				localize('extensionToolsSectionEmpty', "No extension tools are installed."),
 				this._currentModel.filter(vm => vm.toolSet.source.type === 'extension'),
 			),
-		].filter(group => !query || group.count > 0);
+		]).filter(group => !query || group.count > 0);
 
 		if (groups.length === 0 && query) {
 			this._tree.setChildren(null);

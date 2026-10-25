@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../../../base/common/uri.js';
+import { isRuntimeManagedCustomization } from '../../../../../../platform/agentHost/common/meta/runtimeToolInventory.js';
 import { disposableTimeout, raceCancellation } from '../../../../../../base/common/async.js';
 import { cancelOnDispose, CancellationToken } from '../../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
@@ -308,8 +309,10 @@ export abstract class AbstractAgentHostCustomizationService extends Disposable i
 				const source = URI.parse(server.uri);
 				const channel = server.channel;
 				const handleMcpRequest = target.handleMcpRequest;
+				const readOnly = isRuntimeManagedCustomization(server);
 				return {
 					id: this._scopedMcpServerId(sessionResource, server.id),
+					...(readOnly ? { readOnly: true } : {}),
 					name: server.name,
 					displayName: readMcpServerDisplayName(server),
 					connectorName: readMcpServerConnectorName(server),
@@ -325,15 +328,15 @@ export abstract class AbstractAgentHostCustomizationService extends Disposable i
 					owningPluginClientId: plugin?.clientId,
 					disabledReason: getCustomizationDisabledReason(server, plugin),
 					status: server.state.kind,
-					authenticating: this._isAutoAuthenticatingMcpServer(sessionResource, target, server),
+					authenticating: !readOnly && this._isAutoAuthenticatingMcpServer(sessionResource, target, server),
 					state: server.state,
-					sourceUri: source.scheme === 'mcp-top-level' ? undefined : target.resourceUris.fromAgentHost(source),
+					sourceUri: source.scheme === 'mcp-top-level' || readOnly ? undefined : target.resourceUris.fromAgentHost(source),
 					sourceRange: server.range,
 					logOutputChannelId: channelIdForMcpServer(sessionResource.toString(), server.id),
-					setEnabled: (enabled: boolean) => target.setCustomizationEnablement(server.id, withCustomizationEnablement(server.enablement, CustomizationEnablementKind.Session, { kind: CustomizationEnablementKind.Session, enabled })),
-					start: () => target.startMcpServer(server.id),
-					stop: () => target.stopMcpServer(server.id),
-					...(server.state.kind === McpServerStatus.Starting && server.state.blocking ? { background: () => target.backgroundMcpServer(server.id) } : {}),
+					setEnabled: (enabled: boolean) => { if (!readOnly) { target.setCustomizationEnablement(server.id, withCustomizationEnablement(server.enablement, CustomizationEnablementKind.Session, { kind: CustomizationEnablementKind.Session, enabled })); } },
+					start: async () => { if (!readOnly) { await target.startMcpServer(server.id); } },
+					stop: async () => { if (!readOnly) { await target.stopMcpServer(server.id); } },
+					...(!readOnly && server.state.kind === McpServerStatus.Starting && server.state.blocking ? { background: () => target.backgroundMcpServer(server.id) } : {}),
 					...(channel && handleMcpRequest ? { listTools: () => listMcpServerTools(handleMcpRequest, channel) } : {}),
 				};
 			});

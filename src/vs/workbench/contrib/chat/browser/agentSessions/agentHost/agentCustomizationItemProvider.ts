@@ -13,7 +13,8 @@ import { autorun, type IObservable } from '../../../../../../base/common/observa
 import { URI } from '../../../../../../base/common/uri.js';
 import { basename, dirname, extUriBiasedIgnorePathCase } from '../../../../../../base/common/resources.js';
 import { getCustomizationDisabledReason, isCustomizationEnabled, type CustomizationDisabledReason } from '../../../../../../platform/agentHost/common/customizationEnablement.js';
-import { isAgentBuiltinCustomizationUri } from '../../../../../../platform/agentHost/common/agentHostCustomizationUri.js';
+import { AGENT_BUILTIN_CUSTOMIZATION_SCHEME, isAgentBuiltinCustomizationUri } from '../../../../../../platform/agentHost/common/agentHostCustomizationUri.js';
+import { readRuntimePlugins } from '../../../../../../platform/agentHost/common/meta/runtimeToolInventory.js';
 import { CustomizationLoadStatus, CustomizationType, type AgentCustomization, type ChildCustomization, type ClientPluginCustomization, type Customization, type CustomizationLoadState, type DirectoryCustomization, PluginCustomization } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { ILogService } from '../../../../../../platform/log/common/log.js';
 import { ICustomizationItem, ICustomizationItemAction, ICustomizationItemProvider, ICustomizationSourceFolder, type IAgentFileToolInventoryEntry } from '../../../common/customizationHarnessService.js';
@@ -294,6 +295,10 @@ export class AgentCustomizationItemProvider extends Disposable implements ICusto
 		const expandPromises: Promise<readonly ICustomizationItem[]>[] = [];
 
 		const customizations = this.getCustomizations(sessionResource);
+		for (const plugin of readRuntimePlugins(customizations)) {
+			const uri = this.toRemoteUri(URI.from({ scheme: AGENT_BUILTIN_CUSTOMIZATION_SCHEME, authority: 'runtime', path: `/plugins/${encodeURIComponent(plugin.id)}` }).toString());
+			items.set(plugin.id, { itemKey: plugin.id, uri, type: 'plugin', name: plugin.name, description: plugin.version ? localize('runtimePluginVersion', "Version {0}", plugin.version) : undefined, source: AICustomizationSources.plugin, groupKey: REMOTE_HOST_GROUP, pluginUri: uri, extensionId: undefined, enabled: plugin.enabled, status: plugin.status === 'disabled' ? undefined : plugin.status, actions: [] });
+		}
 
 		const directoryCustomizations = [];
 		for (const sessionCustomization of customizations) {

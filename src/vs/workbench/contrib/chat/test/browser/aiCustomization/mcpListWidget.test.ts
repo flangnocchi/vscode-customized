@@ -1499,6 +1499,15 @@ suite('mcpListWidget', () => {
 		]);
 	});
 
+	test('does not offer VS Code lifecycle or enablement actions for a runtime-managed server', () => {
+		const server = createAgentHostServer({ readOnly: true, enabled: true });
+		const { service: agentHostService } = createAgentHostCustomizations();
+		assert.deepStrictEqual({
+			lifecycle: getActiveSessionServerLifecycleAction(server),
+			enablement: getAgentHostMcpServerEnablementActions(agentHostService, createAgentPluginService(), URI.parse('vscode-agent-session:///session-1'), server),
+		}, { lifecycle: undefined, enablement: [] });
+	});
+
 	test('uses the current active-session server enablement for rows and lifecycle actions', () => {
 		const disabledServer = createAgentHostServer({ enabled: false });
 		const enabledServer = createAgentHostServer({ enabled: true });
