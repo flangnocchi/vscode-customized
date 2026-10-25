@@ -10,6 +10,8 @@ import { join } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { CustomizationType } from '../../common/state/sessionState.js';
+import { McpServerStatus } from '../../common/state/protocol/state.js';
+import { isRuntimeManagedCustomization, readRuntimePlugins, readRuntimeToolInventory } from '../../common/meta/runtimeToolInventory.js';
 import { discoverNativeCliCustomizations, nativeCliCustomizations } from '../../node/nativeCli/nativeCliCustomizations.js';
 
 suite('Native CLI customizations', () => {
@@ -24,7 +26,7 @@ suite('Native CLI customizations', () => {
 		], instructions: [{ absolutePath: join(tmpdir(), 'AGENTS.md') }] });
 		assert.deepStrictEqual(result.map(directory => ({
 			writable: directory.type === CustomizationType.Directory && directory.writable,
-			children: directory.children?.map(child => [child.name, child.uri, child.type === CustomizationType.Skill ? child.disableModelInvocation : undefined, child.type === CustomizationType.Skill ? child.disableUserInvocation : undefined]),
+			children: directory.type === CustomizationType.Directory ? directory.children?.map(child => [child.name, child.uri, child.type === CustomizationType.Skill ? child.disableModelInvocation : undefined, child.type === CustomizationType.Skill ? child.disableUserInvocation : undefined]) : [],
 		})), [
 			{ writable: false, children: [['native-winner', URI.file(path).toString(), true, true]] },
 			{ writable: false, children: [['AGENTS.md', URI.file(join(tmpdir(), 'AGENTS.md')).toString(), undefined, undefined]] },
@@ -33,8 +35,36 @@ suite('Native CLI customizations', () => {
 
 	test('keeps pathless native skills read-only and rejects incomplete observations', () => {
 		const result = nativeCliCustomizations('dsh', { skills: [{ name: 'runtime-only' }] });
-		assert.deepStrictEqual(result.flatMap(directory => directory.children ?? []).map(child => [child.name, URI.parse(child.uri).scheme]), [['runtime-only', 'agent-builtin']]);
+		assert.deepStrictEqual(result.flatMap(directory => directory.type === CustomizationType.Directory ? directory.children ?? [] : []).map(child => [child.name, URI.parse(child.uri).scheme]), [['runtime-only', 'agent-builtin']]);
 		assert.throws(() => nativeCliCustomizations('dsh', { skills: [], complete: false }), /incomplete/);
+	});
+
+	test('projects native agents, plugin status and MCP status without exposing private configuration', () => {
+		const result = nativeCliCustomizations('zcode', {
+			scope: 'chat', agents: [{ name: 'Explore' }, { name: 'Reviewer', path: '/plugins/reviewer.md' }],
+			plugins: [{ name: 'documents', enabled: true }, { name: 'disabled-plugin', enabled: false }],
+			tools: [{ name: 'Read', source: 'builtin' }, { name: 'sharedTool', source: 'vscode', loading: 'deferred' }],
+			mcpServers: { connected: { status: 'connected', headers: { secret: 'private' } }, failed: { status: 'error', error: 'private' } },
+		});
+		assert.deepStrictEqual({
+			agents: result.flatMap(c => c.type === CustomizationType.Directory ? c.children ?? [] : []).map(c => [c.name, URI.parse(c.uri).scheme]),
+			plugins: readRuntimePlugins(result).map(p => [p.name, p.status]),
+			tools: readRuntimeToolInventory(result)?.tools.map(t => [t.name, t.source, t.loading]),
+			servers: result.filter(c => c.type === CustomizationType.McpServer).map(c => [c.name, c.state.kind, isRuntimeManagedCustomization(c)]),
+			containsPrivateConfig: JSON.stringify(result).includes('private'),
+		}, {
+			agents: [['Explore', 'agent-builtin'], ['Reviewer', 'file']], plugins: [['documents', 'loaded'], ['disabled-plugin', 'disabled']],
+			tools: [['Read', 'builtin', 'eager'], ['sharedTool', 'vscode', 'deferred']],
+			servers: [['connected', McpServerStatus.Ready, true], ['failed', McpServerStatus.Error, true]], containsPrivateConfig: false,
+		});
+	});
+
+	test('includes only enabled, runnable native plugin hook definitions', () => {
+		const result = nativeCliCustomizations('zcode', { plugins: [
+			{ name: 'active', enabled: true, hookDetails: [{ sourcePath: '/plugins/active/hooks.json', runnable: true, command: 'private' }, { sourcePath: '/plugins/active/blocked.json', runnable: false }] },
+			{ name: 'disabled', enabled: false, hookDetails: [{ sourcePath: '/plugins/disabled/hooks.json', runnable: true }] },
+		] });
+		assert.deepStrictEqual(result.flatMap(c => c.type === CustomizationType.Directory ? c.children ?? [] : []).map(c => [c.type, c.uri]), [[CustomizationType.Hook, URI.file('/plugins/active/hooks.json').toString()]]);
 	});
 
 	test('DSH queries native services without initializing a conversation, respects disabled instructions and removes its overlay', async () => {
@@ -58,7 +88,7 @@ import(url.pathToFileURL(plugin).href).then(module=>module.apply({
 		try {
 			const result = await discoverNativeCliCustomizations('dsh', { executable: process.execPath, args: ['-e', fixture, '--'], cwd: root, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', TEST_NATIVE_AUDIT: audit }, jsonrpc: true }, new AbortController().signal);
 			const paths = JSON.parse(await fs.readFile(audit, 'utf8')) as { patch: string; plugin: string; cwd: string };
-			assert.deepStrictEqual({ cwd: paths.cwd, items: result.flatMap(directory => directory.children ?? []).map(child => [child.type, child.name]) }, { cwd: await fs.realpath(root), items: [['skill', 'native-skill'], ['rule', 'CUSTOM.md']] });
+			assert.deepStrictEqual({ cwd: paths.cwd, items: result.flatMap(directory => directory.type === CustomizationType.Directory ? directory.children ?? [] : []).map(child => [child.type, child.name]) }, { cwd: await fs.realpath(root), items: [['skill', 'native-skill'], ['rule', 'CUSTOM.md']] });
 			await assert.rejects(fs.stat(paths.patch), { code: 'ENOENT' });
 			await assert.rejects(fs.stat(paths.plugin), { code: 'ENOENT' });
 		} finally {
@@ -77,7 +107,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 });
 `;
 		const result = await discoverNativeCliCustomizations('zcode', { executable: process.execPath, args: ['-e', fixture], cwd: tmpdir(), env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, jsonrpc: false }, new AbortController().signal);
-		assert.deepStrictEqual(result.flatMap(directory => directory.children ?? []).map(child => [child.name, child.uri]), [['zcode-skill', URI.file(join(tmpdir(), 'SKILL.md')).toString()]]);
+		assert.deepStrictEqual(result.flatMap(directory => directory.type === CustomizationType.Directory ? directory.children ?? [] : []).map(child => [child.name, child.uri]), [['zcode-skill', URI.file(join(tmpdir(), 'SKILL.md')).toString()]]);
 	});
 
 	test('aborted discovery never starts a native process', async () => {

@@ -384,8 +384,8 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 			icon: getNativeCliAgentIcon(agent.provider) ?? ThemeIcon.fromId(Codicon.server.id),
 			customAgentTarget: agent.provider === 'copilotcli' ? Target.GitHubCopilot : undefined,
 			modelCatalogueStatus,
-			// The Tools section is surfaced for the Copilot CLI agent host only.
-			hiddenSections: agent.provider === 'copilotcli' ? [AICustomizationManagementSection.Prompts] : [AICustomizationManagementSection.Tools, AICustomizationManagementSection.Prompts],
+			hiddenSections: agent.provider === 'copilotcli' || agent.provider === 'dsh' || agent.provider === 'zcode' ? [AICustomizationManagementSection.Prompts] : [AICustomizationManagementSection.Tools, AICustomizationManagementSection.Prompts],
+			usesRuntimeToolInventory: agent.provider === 'dsh' || agent.provider === 'zcode',
 			hideGenerateButton: true,
 			syncProvider,
 			itemProvider,

@@ -112,6 +112,8 @@ export type AgentHostMcpTool = {
  */
 export interface IAgentHostMcpServer {
 	readonly id: string;
+	/** The native runtime reports status but owns configuration and lifecycle. */
+	readonly readOnly?: boolean;
 	readonly name: string;
 	/** Optional Connector catalog name for presentation only. */
 	readonly displayName?: string;

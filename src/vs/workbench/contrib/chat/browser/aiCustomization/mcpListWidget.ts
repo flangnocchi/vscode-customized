@@ -644,6 +644,7 @@ export class McpServerItemRenderer extends Disposable implements IListRenderer<I
 		renderMcpServerStatusActions(templateData.actions, templateData.actionDisposables, this.hoverService, {
 			label,
 			state,
+			readOnly: activeSessionServer?.readOnly,
 			signIn: activeSessionServer ? () => authenticateMcpServer(this.agentHostCustomizationService, activeSessionResource, activeSessionServer.id) : undefined,
 			start: async () => {
 				const entry = getEntry();
@@ -819,6 +820,7 @@ async function startMcpEntry(entry: IMcpInstalledEntry): Promise<void> {
 
 export interface IMcpServerStatusActionsOptions {
 	readonly label: string;
+	readonly readOnly?: boolean;
 	readonly state: McpStatusKind | undefined;
 	readonly signIn?: () => Promise<void | boolean>;
 	readonly start?: () => Promise<void>;
@@ -829,12 +831,12 @@ export interface IMcpServerStatusActionsOptions {
 
 export function renderMcpServerStatusActions(container: HTMLElement, store: DisposableStore, hoverService: IHoverService, options: IMcpServerStatusActionsOptions): void {
 	const { label, state, signIn, start, openStatus } = options;
-	if (state === McpServerStatus.AuthRequired && signIn) {
+	if (!options.readOnly && state === McpServerStatus.AuthRequired && signIn) {
 		const signInButton = createMcpSignInButton(container, store, label);
 		signInButton.element.tabIndex = -1;
 		registerMcpSignInButtonAction(store, signInButton, label, signIn, options);
 	}
-	if (isMcpServerStartable(state) && start) {
+	if (!options.readOnly && isMcpServerStartable(state) && start) {
 		const startButton = createMcpStartButton(container, store, label);
 		startButton.element.tabIndex = -1;
 		let disposed = false;
@@ -1518,7 +1520,7 @@ export function hasSameMcpMembership(previous: string, current: string): boolean
 }
 
 export function getActiveSessionServerLifecycleAction(server: AgentHostMcpServer): Action | undefined {
-	if (!getActiveSessionServerPresentation(server).enabled) {
+	if (server.readOnly || !getActiveSessionServerPresentation(server).enabled) {
 		return undefined;
 	}
 	return isMcpServerStartable(server.status)
@@ -1582,6 +1584,7 @@ const agentHostMcpServerEnablementActionInfo = {
 
 /** Creates enablement actions for an agent-host server. */
 export function getAgentHostMcpServerEnablementActions(agentHostCustomizations: IAgentHostCustomizationService, agentPluginService: IAgentPluginService, sessionResource: URI, server: AgentHostMcpServer, scopes: readonly AgentHostMcpServerEnablementScope[] = ['global', 'workspace', 'session']): IAction[] {
+	if (server.readOnly) { return []; }
 	if (server.disabledReason?.source === 'plugin') {
 		const decision = server.disabledReason.plugin.enablement?.[0];
 		if (!decision) {
@@ -1612,6 +1615,7 @@ export function setPrimaryMcpServerEnablement(
 	activeSessionServer: AgentHostMcpServer | undefined,
 	enabled: boolean,
 ): void {
+	if (activeSessionServer?.readOnly) { return; }
 	if (activeSessionServer && isHostOwnedPluginMcpServer(activeSessionServer)) {
 		agentHostCustomizations.setCustomizationEnablement(
 			sessionResource,
