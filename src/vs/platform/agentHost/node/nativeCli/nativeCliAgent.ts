@@ -231,8 +231,8 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		if (workspaceless) { await fs.mkdir(cwd, { recursive: true }); }
 		const model = options?.model ?? this.defaultModel;
 		if (!model) { throw new Error(localize('nativeCli.modelsUnavailable', "Could not read the {0} model catalog. Check its native provider configuration and restart the local agent host.", this.id)); }
+		const permissionMode = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, options?.config).values[nativeCliPermissionModeKey(this.id)];
 		const entry = this.newEntry(chat, context.resource, { version: 1, provider: this.id, nativeId: this.id === 'zcode' ? `sess_${generateUuid()}` : generateUuid(), cwd, model, workspaceless, persisted: false, createdAt: Date.now(), modifiedAt: Date.now() });
-		const permissionMode = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, options?.config).values[nativeCliPermissionModeKey];
 		if (typeof permissionMode === 'string') { entry.backing.permissionMode = permissionMode; }
 		return { providerData: JSON.stringify(entry.backing), provisional: true };
 	}
@@ -394,8 +394,9 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			await this.permissionsReady;
 			if (entry.generation !== generation || entry.active !== turn || entry.stopping || this.closing) { throw new CancellationError(); }
 			const values = this.agentConfigurationService.getChatConfigValues({ session: context.owner.get().toString(), chat: chat.toString() });
-			const permissionConfig = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, { ...values, [nativeCliPermissionModeKey]: values?.[nativeCliPermissionModeKey] ?? entry.backing.permissionMode ?? this.permissionCatalog?.defaultMode });
-			const permissionMode = permissionConfig.values[nativeCliPermissionModeKey];
+			const permissionKey = nativeCliPermissionModeKey(this.id);
+			const permissionConfig = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, { ...values, [permissionKey]: values?.[permissionKey] ?? entry.backing.permissionMode ?? this.permissionCatalog?.defaultMode });
+			const permissionMode = permissionConfig.values[permissionKey];
 			const connection = await this.ensureProcess(entry);
 			if (entry.generation !== generation || entry.active !== turn || entry.stopping) { throw new CancellationError(); }
 			if (typeof permissionMode === 'string') {

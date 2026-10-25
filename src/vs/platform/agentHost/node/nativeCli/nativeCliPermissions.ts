@@ -8,7 +8,8 @@ import type { NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import type { ResolveSessionConfigResult } from '../../common/state/protocol/commands.js';
 import { record, type NativeRecord } from './nativeCliTransport.js';
 
-export const nativeCliPermissionModeKey = 'nativeCli.permissionMode';
+/** Each provider owns its mode vocabulary, including while switching a draft's harness. */
+export function nativeCliPermissionModeKey(id: NativeCliAgentId): string { return `${id}.permissionMode`; }
 
 export interface INativeCliPermissions {
 	readonly options: readonly { readonly id: string; readonly name: string; readonly description?: string }[];
@@ -45,15 +46,16 @@ function modeLabel(id: NativeCliAgentId, mode: string, fallback: string): string
 
 export function resolveNativeCliPermissionConfig(id: NativeCliAgentId, permissions: INativeCliPermissions | undefined, config?: NativeRecord): ResolveSessionConfigResult {
 	if (!permissions) { return { schema: { type: 'object', properties: {} }, values: {} }; }
-	const selected = config?.[nativeCliPermissionModeKey] ?? permissions.defaultMode;
+	const key = nativeCliPermissionModeKey(id);
+	const selected = config?.[key] ?? permissions.defaultMode;
 	if (!permissions.options.some(option => option.id === selected)) { throw new Error(localize('nativeCli.permissions.invalid', "The native runtime does not offer this permission mode.")); }
 	return {
-		schema: { type: 'object', properties: { [nativeCliPermissionModeKey]: {
+		schema: { type: 'object', properties: { [key]: {
 			type: 'string', title: localize('nativeCli.permissions.title', "Permissions"),
 			description: localize('nativeCli.permissions.description', "Native permissions for this chat. Changes apply to the next turn."),
 			enum: permissions.options.map(option => option.id), enumLabels: permissions.options.map(option => modeLabel(id, option.id, option.name)),
 			enumDescriptions: permissions.options.map(option => option.description ?? modeLabel(id, option.id, option.name)),
 			default: permissions.defaultMode, sessionMutable: true, chatMutable: true,
-		} } }, values: { [nativeCliPermissionModeKey]: selected },
+		} } }, values: { [key]: selected },
 	};
 }
