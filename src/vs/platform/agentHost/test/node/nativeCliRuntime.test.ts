@@ -18,8 +18,8 @@ suite('Native CLI runtime observation', () => {
 		const root = await fs.mkdtemp(join(tmpdir(), 'native-runtime-test-'));
 		const target = join(root, 'zcode.cjs');
 		const source = String.raw`
-const readline=require('readline');const Methods={runtimeCapabilities:'runtime/capabilities'};const Schema={parse:v=>v};
-const runtime={config:{modelSelection:{modelId:'default'}},registeredMcpToolNames:['mcp_search'],
+const readline=require('readline');const Methods={runtimeCapabilities:'runtime/capabilities'};const Schema={parse:v=>v,object:v=>v};const Id={};const Modes={options:['plan','build']};const ModeRequest=Schema.object({sessionId:Id,mode:Modes,expectedRevision:Id});
+let mode='build';const runtime={getMode:()=>mode,setExecutionState:async state=>{mode=state.mode},config:{modelSelection:{modelId:'default'}},registeredMcpToolNames:['mcp_search'],
  getSessionModelSelection:()=>undefined,modelFactory:({selection})=>selection,
  getTools:model=>[{name:model.modelId,description:'Selected model tool'},{name:'mcp_search',deferLoading:true}],
  getAgentDefinitions:()=>({activeAgents:[{name:'Explore'}]}),contextSourceSnapshot:{userInstructions:{sources:[{filePath:'/workspace/AGENTS.md',content:'must not cross the boundary'}]}},
@@ -32,6 +32,9 @@ const server=new Server();readline.createInterface({input:process.stdin}).on('li
 			await fs.writeFile(target, source);
 			const observer = disposables.add(await observeNativeCliRuntime('zcode', { executable: process.execPath, args: [target], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, cwd: root, jsonrpc: false }));
 			transport = disposables.add(new NativeCliTransport(observer.launch));
+			const applied = await transport.request('vscode/setPermissionMode', { sessionId: 'chat', mode: 'plan' });
+			assert.deepStrictEqual(applied, { mode: 'plan' });
+			await assert.rejects(transport.request('vscode/setPermissionMode', { sessionId: 'chat', mode: 'invented' }), /Unsupported/);
 			const result = record(await transport.request('vscode/runtimeInventory', { sessionId: 'chat', modelSelection: { modelId: 'chosen' } }));
 			assert.deepStrictEqual({ tools: result.tools, agents: result.agents, instructions: result.instructions, sourceUnchanged: await fs.readFile(target, 'utf8') === source }, {
 				tools: [{ name: 'chosen', description: 'Selected model tool', loading: 'eager', source: 'builtin' }, { name: 'mcp_search', loading: 'deferred', source: 'mcp' }], agents: [{ name: 'Explore' }], instructions: [{ absolutePath: '/workspace/AGENTS.md' }], sourceUnchanged: true,

@@ -16,7 +16,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../log/common/log.js';
 import { INativeEnvironmentService } from '../../../environment/common/environment.js';
-import { AgentSession, type AgentSignal, type IActiveClient, type IAgent, type IAgentChatContext, type IAgentChatDataChange, type IAgentChats, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentMaterializeChatEvent, type IAgentModelInfo, resolveAgentChatContext } from '../../common/agent.js';
+import { AgentSession, type AgentSignal, type IActiveClient, type IAgent, type IAgentChatContext, type IAgentChatDataChange, type IAgentChats, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentMaterializeChatEvent, type IAgentModelInfo, type IAgentResolveChatConfigParams, resolveAgentChatContext } from '../../common/agent.js';
 import { type INativeCliAgentConfig, type NativeCliAgentId, nativeCliAgentEnv, nativeCliAgentIds } from '../../common/nativeCliAgentConfig.js';
 import { ISessionDataService } from '../../common/sessionDataService.js';
 import { ActionType } from '../../common/state/sessionActions.js';
@@ -25,8 +25,10 @@ import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } 
 import { NativeCliTurn } from './nativeCliTurn.js';
 import { ensureWorkspacelessScratchDir } from '../workspacelessScratchDir.js';
 import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
-import { discoverNativeCliCustomizations, nativeCliCustomizations } from './nativeCliCustomizations.js';
+import { discoverNativeCliCustomizations, discoverNativeCliRuntimeSnapshot, nativeCliCustomizations } from './nativeCliCustomizations.js';
 import { observeNativeCliRuntime } from './nativeCliRuntime.js';
+import { IAgentConfigurationService } from '../agentConfigurationService.js';
+import { nativeCliPermissionModeKey, readNativeCliPermissions, resolveNativeCliPermissionConfig, type INativeCliPermissions } from './nativeCliPermissions.js';
 
 interface IBacking {
 	version: 1;
@@ -38,6 +40,7 @@ interface IBacking {
 	createdAt: number;
 	modifiedAt: number;
 	workspaceless?: boolean;
+	permissionMode?: string;
 }
 
 interface IChat {
@@ -126,6 +129,8 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	private readonly catalogReady: Promise<void>;
 	private readonly customizationRequests = new Map<string, Promise<readonly Customization[]>>();
 	private defaultModel: ModelSelection | undefined;
+	private permissionCatalog: INativeCliPermissions | undefined;
+	private readonly permissionsReady: Promise<void>;
 
 	constructor(
 		readonly id: NativeCliAgentId,
@@ -133,15 +138,28 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		@ISessionDataService private readonly dataService: ISessionDataService,
 		@ILogService private readonly logService: ILogService,
 		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
+		@IAgentConfigurationService private readonly agentConfigurationService: IAgentConfigurationService,
 	) {
 		super();
 		this._register(toDisposable(() => this.catalogAbort.abort()));
+		this.permissionsReady = this.loadPermissions();
 		if (config.models.length) {
 			this.catalog.set(config.models.map(model => ({ ...model, provider: id, supportsVision: false })), undefined);
 			this.defaultModel = { id: config.models[0].id };
 			this.catalogReady = Promise.resolve();
 		} else {
 			this.catalogReady = this.loadModelCatalog();
+		}
+	}
+
+	private async loadPermissions(): Promise<void> {
+		try {
+			const launch = await nativeCliLaunch(this.id, this.config, this.environmentService.userHome.fsPath);
+			if (!launch.args.includes('--profile') && !launch.args.some(arg => arg.endsWith('/zcode.cjs'))) { return; }
+			const snapshot = await discoverNativeCliRuntimeSnapshot(this.id, launch, this.catalogAbort.signal);
+			if (!this.closing) { this.permissionCatalog = readNativeCliPermissions(snapshot); }
+		} catch {
+			if (!this.closing) { this.logService.warn('Native permission catalog unavailable', this.id); }
 		}
 	}
 
@@ -201,7 +219,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	}
 
 	private async create(chat: URI, context: IAgentChatContext, options?: IAgentCreateChatOptions): Promise<IAgentCreateChatResult> {
-		await this.catalogReady;
+		await Promise.all([this.catalogReady, this.permissionsReady]);
 		if (this.closing) { throw new CancellationError(); }
 		if (options?.fork || options?.importConversation) { throw new Error(localize('nativeCli.branching', "Native CLI conversation branching and import are not supported.")); }
 		if (this.entries.has(chat.toString())) { throw new Error(localize('nativeCli.chatExists', "Native agent chat already exists.")); }
@@ -214,6 +232,8 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		const model = options?.model ?? this.defaultModel;
 		if (!model) { throw new Error(localize('nativeCli.modelsUnavailable', "Could not read the {0} model catalog. Check its native provider configuration and restart the local agent host.", this.id)); }
 		const entry = this.newEntry(chat, context.resource, { version: 1, provider: this.id, nativeId: this.id === 'zcode' ? `sess_${generateUuid()}` : generateUuid(), cwd, model, workspaceless, persisted: false, createdAt: Date.now(), modifiedAt: Date.now() });
+		const permissionMode = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, options?.config).values[nativeCliPermissionModeKey];
+		if (typeof permissionMode === 'string') { entry.backing.permissionMode = permissionMode; }
 		return { providerData: JSON.stringify(entry.backing), provisional: true };
 	}
 
@@ -356,7 +376,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		}
 	}
 
-	private async send(chat: URI, prompt: string, turnId: string, roots: readonly URI[] | undefined, _context: IAgentChatContext): Promise<void> {
+	private async send(chat: URI, prompt: string, turnId: string, roots: readonly URI[] | undefined, context: IAgentChatContext): Promise<void> {
 		const entry = this.require(chat);
 		const generation = entry.generation;
 		if (entry.active) { throw new Error(localize('nativeCli.alreadyRunning', "A native agent turn is already running.")); }
@@ -371,7 +391,18 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		void completion.p.catch(() => { });
 		entry.history.push(turn.turn);
 		try {
+			await this.permissionsReady;
+			if (entry.generation !== generation || entry.active !== turn || entry.stopping || this.closing) { throw new CancellationError(); }
+			const values = this.agentConfigurationService.getChatConfigValues({ session: context.owner.get().toString(), chat: chat.toString() });
+			const permissionConfig = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, { ...values, [nativeCliPermissionModeKey]: values?.[nativeCliPermissionModeKey] ?? entry.backing.permissionMode ?? this.permissionCatalog?.defaultMode });
+			const permissionMode = permissionConfig.values[nativeCliPermissionModeKey];
 			const connection = await this.ensureProcess(entry);
+			if (entry.generation !== generation || entry.active !== turn || entry.stopping) { throw new CancellationError(); }
+			if (typeof permissionMode === 'string') {
+				const applied = record(await connection.request('vscode/setPermissionMode', { sessionId: entry.backing.nativeId, mode: permissionMode }));
+				if (applied.mode !== permissionMode) { throw new Error(localize('nativeCli.permissions.notApplied', "The native runtime did not apply the selected permission mode.")); }
+				entry.backing.permissionMode = permissionMode;
+			}
 			if (entry.generation !== generation || entry.active !== turn || entry.stopping) { throw new CancellationError(); }
 			if (this.id === 'dsh') {
 				await connection.request('session/prompt', { sessionId: entry.backing.nativeId, contentBlocks: [{ type: 'text', text: prompt }] });
@@ -506,7 +537,10 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		return { chat, startTime: Number(backing.createdAt), modifiedTime: Number(backing.modifiedAt), workingDirectories: [URI.file(backing.cwd)], model: record(backing.model) as unknown as ModelSelection };
 	}
 
-	async resolveChatConfig() { return { schema: { type: 'object' as const, properties: {} }, values: {} }; }
+	async resolveChatConfig(params: IAgentResolveChatConfigParams = {}) {
+		await this.permissionsReady;
+		return resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, params.config);
+	}
 	getInheritedChatConfig() { return undefined; }
 	async chatConfigCompletions() { return { items: [] }; }
 	async getChatCustomizations(chat: URI, context: URI | IAgentChatContext): Promise<readonly Customization[]> {
@@ -554,7 +588,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	shutdown(): Promise<void> {
 		this.closing = true;
 		this.catalogAbort.abort();
-		return this.shutdownTask ??= Promise.all([this.catalogReady, ...[...this.customizationRequests.values()].map(request => request.catch(() => { })), ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })]).then(() => { });
+		return this.shutdownTask ??= Promise.all([this.catalogReady, this.permissionsReady, ...[...this.customizationRequests.values()].map(request => request.catch(() => { })), ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })]).then(() => { });
 	}
 	override dispose(): void { void this.shutdown(); super.dispose(); }
 }
