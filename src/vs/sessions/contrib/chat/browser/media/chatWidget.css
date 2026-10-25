@@ -107,22 +107,11 @@
 	flex-wrap: nowrap;
 	gap: 0;
 	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
-	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder, transparent);
-	border-radius: var(--vscode-cornerRadius-large);
 }
 
 .agent-sessions-workbench:not(.phone-layout) .experimental-new-session-composer .new-session-workspace-picker-container .new-chat-session-options {
 	max-width: calc(100% - 2 * (var(--vscode-spacing-size100) + var(--vscode-strokeThickness)));
 	margin-inline: calc(var(--vscode-spacing-size100) + var(--vscode-strokeThickness));
-}
-
-.monaco-workbench.agent-sessions-workbench .sessions-chat-widget .new-chat-widget-content.experimental-new-session-composer .new-chat-session-options {
-	background-color: color-mix(in srgb, var(--vscode-agentsChatInput-background) 75%, var(--session-view-background));
-	border-radius: var(--vscode-cornerRadius-large) var(--vscode-cornerRadius-large) 0 0;
-}
-
-.monaco-workbench.agent-sessions-workbench:is(.hc-black, .hc-light) .sessions-chat-widget .new-chat-widget-content.experimental-new-session-composer .new-chat-session-options {
-	background-color: var(--vscode-agentsChatInput-background);
 }
 
 .new-session-below-input-surfaces {
