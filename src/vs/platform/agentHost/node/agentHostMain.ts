@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { NativeCliAgent, readNativeCliAgentConfigs } from './nativeCli/nativeCliAgent.js';
 import { DeferredPromise } from '../../../base/common/async.js';
 import { ProxyChannel } from '../../../base/parts/ipc/common/ipc.js';
 import { Server as ChildProcessServer } from '../../../base/parts/ipc/node/ipc.cp.js';
@@ -188,6 +189,13 @@ async function startAgentHost(): Promise<void> {
 		const providerService = runtimeServices.providerService;
 		sdkDownloadProgress = runtime.sdkDownloadProgress;
 		providerService.registerProvider(instantiationService.createInstance(CopilotAgent));
+		try {
+			for (const [id, config] of readNativeCliAgentConfigs(process.env)) {
+				providerService.registerProvider(instantiationService.createInstance(NativeCliAgent, id, config));
+			}
+		} catch (error) {
+			logService.error('Failed to configure native CLI agents', error);
+		}
 		// Claude and Codex providers are gated on two things:
 		//  1. The user-facing enable toggle (`chat.agentHost.<x>Agent.enabled`,
 		//     forwarded as an env var by the starters). Claude defaults to on.

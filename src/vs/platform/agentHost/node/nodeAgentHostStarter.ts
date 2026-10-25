@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { buildNativeCliAgentEnv } from '../common/nativeCliAgentConfig.js';
 import * as fs from 'fs';
 import { Disposable, DisposableStore } from '../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../base/common/network.js';
@@ -109,6 +110,7 @@ export class NodeAgentHostStarter extends Disposable implements IAgentHostStarte
 			claudeAgentEnabled: this._configurationService.getValue<boolean>(AgentHostClaudeAgentEnabledSettingId),
 			codexAgentEnabled: this._configurationService.getValue<boolean>(AgentHostCodexAgentEnabledSettingId),
 		}, process.env);
+		Object.assign(sdkEnv, buildNativeCliAgentEnv(this._configurationService, process.env));
 		Object.assign(env, sdkEnv);
 
 		// Translate `chat.agentHost.otel.*` settings into the env vars consumed by

@@ -9,6 +9,7 @@ import { PolicyCategory } from '../../../base/common/policy.js';
 import { AgentHostConfigurationSyncScope, ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationPropertySchema, IConfigurationRegistry } from '../../configuration/common/configurationRegistry.js';
 import { COPILOT_OTEL_CAPTURE_CONTENT_KEY, COPILOT_OTEL_CAPTURE_IDENTITY_KEY, COPILOT_OTEL_ENABLED_KEY, COPILOT_OTEL_ENDPOINT_KEY, COPILOT_OTEL_FILE_PATH_KEY, COPILOT_OTEL_HEADERS_KEY, COPILOT_OTEL_LOCK_CAPTURE_CONTENT_KEY, COPILOT_OTEL_PROTOCOL_KEY, COPILOT_OTEL_RESOURCE_ATTRIBUTES_KEY, COPILOT_OTEL_SERVICE_NAME_KEY, COPILOT_TEMPORARY_ALLOW_LOCAL_HARNESS_KEY, managedSettingValue, thirdPartyAgentEnabledValue } from '../../policy/common/copilotManagedSettings.js';
 import product from '../../product/common/product.js';
+import { nativeCliAgentIds } from './nativeCliAgentConfig.js';
 import { Registry } from '../../registry/common/platform.js';
 import {
 	AgentHostAhpJsonlLoggingSettingId,
@@ -319,6 +320,16 @@ configurationRegistry.registerConfiguration({
 			experiment: { mode: 'auto' },
 			agentHost: { key: AgentHostMcpToolRoutingEnabledConfigKey },
 		},
+		...Object.fromEntries(nativeCliAgentIds.flatMap(id => {
+			const prefix = `chat.agentHost.${id}Agent`;
+			return [
+				[`${prefix}.enabled`, { type: 'boolean', default: false, tags: ['experimental'], description: nls.localize('nativeCli.enabled', "Enable the {0} provider in the local agent host. Restart the local agent host after changing this setting.", id) }],
+				[`${prefix}.executable`, { type: 'string', default: '', scope: ConfigurationScope.MACHINE, description: nls.localize('nativeCli.executable', "Native agent executable. Empty uses the installed CLI or macOS application.") }],
+				[`${prefix}.args`, { type: 'array', items: { type: 'string' }, default: [], scope: ConfigurationScope.MACHINE, description: nls.localize('nativeCli.args', "Arguments replacing the native agent's default protocol-server arguments. Arguments are passed directly without a shell.") }],
+				[`${prefix}.home`, { type: 'string', default: '', scope: ConfigurationScope.MACHINE, description: nls.localize('nativeCli.home', "Optional DSH_HOME or ZCODE_DATA_BASE_DIR override. Empty preserves the native agent's existing environment and default data directory.") }],
+				[`${prefix}.models`, { type: 'array', default: [], items: { type: 'object', required: ['id', 'name'], additionalProperties: false, properties: { id: { type: 'string', minLength: 1 }, name: { type: 'string' } } }, description: nls.localize('nativeCli.models', "Additional native model choices with id in provider/model format and a display name. Empty uses the native defaults; ZCode also discovers its catalog when a conversation starts.") }],
+			];
+		})),
 		[AgentHostClaudeAgentEnabledSettingId]: {
 			type: 'boolean',
 			description: nls.localize('chat.agentHost.claudeAgent.enabled', "When enabled, the agent host registers the Claude provider, subject to the Claude SDK being reachable. The agent host process must be restarted for changes to take effect."),
