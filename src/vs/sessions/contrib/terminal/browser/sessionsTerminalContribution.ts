@@ -33,6 +33,21 @@ import { Menus, SessionActivityBarGroup } from '../../../browser/menus.js';
 import { CustomViewVisibleContext } from '../../../common/contextkeys.js';
 import { ISessionTaskRunnerRegistry } from '../../chat/browser/sessionTaskRunner.js';
 import { AgentHostSessionTaskRunner } from './agentHostSessionTaskRunner.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { Extensions as ConfigurationExtensions, IConfigurationRegistry, ConfigurationScope } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
+
+const AUTO_CREATE_SESSION_TERMINAL_SETTING = 'sessions.terminal.autoCreateOnSessionStart';
+
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'sessions',
+	properties: {
+		[AUTO_CREATE_SESSION_TERMINAL_SETTING]: {
+			type: 'boolean', default: true, scope: ConfigurationScope.APPLICATION,
+			description: localize('sessions.terminal.autoCreate', "Automatically create a terminal when opening an agent session. When disabled, terminals are created when you open one or run a task."),
+		},
+	},
+});
 
 interface ISessionTerminalInfo {
 	/** The cwd to use for terminal matching/creation. For agent host sessions this is the unwrapped file URI. */
@@ -133,6 +148,7 @@ export class SessionsTerminalContribution extends Disposable implements IWorkben
 		@IPathService private readonly _pathService: IPathService,
 		@IFileService private readonly _fileService: IFileService,
 		@ITerminalProfileService private readonly _terminalProfileService: ITerminalProfileService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super();
 
@@ -336,7 +352,7 @@ export class SessionsTerminalContribution extends Disposable implements IWorkben
 		}
 	}
 
-	private async _ensureTerminal(cwd: URI, focus: boolean, session?: ISession, generation?: number, requireCwdMatch = false): Promise<ITerminalInstance[]> {
+	private async _ensureTerminal(cwd: URI, focus: boolean, session?: ISession, generation?: number, requireCwdMatch = false, createIfMissing = true): Promise<ITerminalInstance[]> {
 		if (session && this._isTerminalOperationCancelled(session, generation)) {
 			return [];
 		}
@@ -355,6 +371,7 @@ export class SessionsTerminalContribution extends Disposable implements IWorkben
 			}
 		}
 
+		if (existing.length === 0 && !createIfMissing) { return []; }
 		if (existing.length === 0) {
 			try {
 				const instance = await this._createTerminalForSession(cwd, session);
@@ -503,7 +520,7 @@ export class SessionsTerminalContribution extends Disposable implements IWorkben
 			this._activeAgentHostAddress = targetAgentHostAddress;
 			this._activeSessionId = session.sessionId;
 
-			const instances = await this._ensureTerminal(targetPath, false, session, generation, true);
+			const instances = await this._ensureTerminal(targetPath, false, session, generation, true, this._configurationService.getValue<boolean>(AUTO_CREATE_SESSION_TERMINAL_SETTING) !== false);
 
 			// If the active session or key changed while we were awaiting, a newer
 			// call has taken over — skip the visibility update to avoid flicker.

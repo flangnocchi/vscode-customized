@@ -455,6 +455,7 @@ suite('SessionsTerminalContribution', () => {
 			override onDidChangeViewVisibility = store.add(new Emitter<{ id: string; visible: boolean }>()).event;
 		});
 
+		instantiationService.stub(IConfigurationService, new TestConfigurationService());
 		contribution = store.add(instantiationService.createInstance(SessionsTerminalContribution));
 	});
 
@@ -465,6 +466,19 @@ suite('SessionsTerminalContribution', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	// --- Background provider: uses worktree/repository path ---
+
+	test('can defer automatic terminals while preserving explicit terminal creation', async () => {
+		contribution.dispose();
+		instantiationService.stub(IConfigurationService, new TestConfigurationService({ 'sessions.terminal.autoCreateOnSessionStart': false }));
+		contribution = store.add(instantiationService.createInstance(SessionsTerminalContribution));
+		const cwd = URI.file('/lazy-terminal');
+		const session = makeAgentSession({ repository: cwd, providerType: AgentSessionProviders.Background });
+		activeSessionObs.set(session, undefined);
+		await tick();
+		const automaticallyCreated = createdTerminals.length;
+		await contribution.ensureTerminal(cwd, true, session);
+		assert.deepStrictEqual({ automaticallyCreated, explicitlyCreated: createdTerminals.map(terminal => terminal.cwd.toString()) }, { automaticallyCreated: 0, explicitlyCreated: [cwd.toString()] });
+	});
 
 	test('creates a terminal at the worktree for a background session', async () => {
 		const worktreeUri = URI.file('/worktree');
