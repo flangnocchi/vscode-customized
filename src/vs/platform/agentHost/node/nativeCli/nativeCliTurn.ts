@@ -88,6 +88,8 @@ export class NativeCliTurn {
 				if (block.type === 'text' || block.type === 'reasoning') { this.text(`dsh-${event.seq}-${index}`, nativeText(block), block.type === 'reasoning'); }
 				if (block.type === 'tool-call' && typeof block.id === 'string') { this.tool(block.id, String(block.name ?? block.toolName ?? 'tool'), block.input ?? block.arguments); }
 			}
+		} else if (event.type === 'command/done') {
+			this.text(`dsh-command-${event.seq}`, nativeText(data));
 		} else if (event.type === 'tool/result') {
 			const message = record(data.message);
 			const source = record(message.source);

@@ -50,6 +50,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 	  if(prompt==='crash'){process.exit(2);break;}
 	  if(prompt==='hold'){if(dialect==='dsh')dsh('assistant/message',{message:{content:[{type:'text',text:'waiting'}]}});else event('part.delta',{partId:'answer',field:'text',delta:'waiting'});break;}
 	  if(prompt==='permission'){send({id:'permission',method:'approval/request',params:{sessionId:session,callId:'call-1',toolName:'write'}});break;}
+  if(dialect==='dsh'&&prompt.startsWith('/output-style')){dsh('command/done',{commandId:'style',kind:prompt.endsWith('missing')?'error':'success',text:prompt.endsWith('missing')?'Unknown output style: missing':'Session style: concise'});dsh('turn/end',{reason:{kind:'completed'}});done=true;if(waiter)send({id:waiter,result:{}});break;}
   finish('pid='+process.pid+';resumed='+restored,dialect);break;
  }
  case 'session/wait':if(done)send({id:m.id,result:{}});else waiter=m.id;break;
@@ -180,6 +181,25 @@ suite('Native CLI agents', () => {
 		const turns = await provider.chats.getMessages(chat, context(chat));
 		assert.match(response(turns[0]), /rejected/);
 		await provider.shutdown();
+	});
+
+	test('DSH local command results render and remain in restored history without an assistant message', async () => {
+		const provider = agent('dsh');
+		const chat = await create(provider, 'commands');
+		let backing: string | undefined;
+		store.add(provider.onDidChangeChatData(event => { if (event.chat.toString() === chat.toString()) { backing = event.providerData; } }));
+		await send(provider, chat, '/output-style concise', 'style');
+		await send(provider, chat, '/output-style missing', 'invalid');
+		const before = await provider.chats.getMessages(chat, context(chat));
+		assert.deepStrictEqual(before.map(turn => [turn.state, response(turn)]), [
+			[TurnState.Complete, 'Session style: concise'],
+			[TurnState.Complete, 'Unknown output style: missing'],
+		]);
+		await provider.shutdown();
+		const restored = agent('dsh');
+		await restored.materializeChat(chat, context(chat), backing);
+		assert.deepStrictEqual(await restored.chats.getMessages(chat, context(chat)), before);
+		await restored.shutdown();
 	});
 
 	test('ZCode committed text reconciles deltas without duplicating the final answer', () => {
