@@ -19,7 +19,7 @@ export async function snapshot(ctx, cwd, agent) {
  const skills = skillRegistry ? await skillRegistry.snapshot({ cwd, scope: agent }) : { skills: [], complete: true };
  const instructions = [], plugins = [];
  for (const entry of ctx.loader.entries()) {
-  if (entry.options.group || entry.options.name.includes('vscode-runtime-observer')) continue;
+  if (entry.options.group || entry.moduleNamespace?.name === name) continue;
   const enabled = !entry.disabled;
   plugins.push({ id: entry.id, name: entry.options.name, enabled, status: !enabled ? 'disabled' : entry.fiber?.state === 2 ? 'loaded' : entry.fiber?.state === 3 ? 'error' : 'loading' });
   if (entry.disabled || !entry.fiber || entry.options.name !== '@deepseek-ai/dsh-agent-instructions') continue;

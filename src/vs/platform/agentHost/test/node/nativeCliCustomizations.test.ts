@@ -80,6 +80,7 @@ process.stdin.on('data',()=>{throw new Error('Discovery must not send a session 
 import(url.pathToFileURL(plugin).href).then(module=>module.apply({
  get(name){if(name==='loader')return{await:async()=>{}};if(name==='skills')return{snapshot:async({cwd})=>({complete:true,skills:[{name:'native-skill',path:path.join(cwd,'native.md')}]})};},
  loader:{entries:()=>[
+  {disabled:false,fiber:{state:2},options:{name:plugin},moduleNamespace:module},
   {disabled:true,fiber:{},options:{name:'@deepseek-ai/dsh-agent-instructions'},moduleNamespace:{discoverBaselineInstructionFiles:()=>{throw new Error('Disabled plugin must not be read')}}},
   {disabled:false,fiber:{},options:{name:'@deepseek-ai/dsh-agent-instructions',config:{instructionFileCandidates:['CUSTOM.md']}},moduleNamespace:{discoverBaselineInstructionFiles:async options=>[{absolutePath:path.join(options.cwd,options.instructionFileCandidates[0])}]}}
  ]}
@@ -88,7 +89,7 @@ import(url.pathToFileURL(plugin).href).then(module=>module.apply({
 		try {
 			const result = await discoverNativeCliCustomizations('dsh', { executable: process.execPath, args: ['-e', fixture, '--'], cwd: root, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', TEST_NATIVE_AUDIT: audit }, jsonrpc: true }, new AbortController().signal);
 			const paths = JSON.parse(await fs.readFile(audit, 'utf8')) as { patch: string; plugin: string; cwd: string };
-			assert.deepStrictEqual({ cwd: paths.cwd, items: result.flatMap(directory => directory.type === CustomizationType.Directory ? directory.children ?? [] : []).map(child => [child.type, child.name]) }, { cwd: await fs.realpath(root), items: [['skill', 'native-skill'], ['rule', 'CUSTOM.md']] });
+			assert.deepStrictEqual({ cwd: paths.cwd, items: result.flatMap(directory => directory.type === CustomizationType.Directory ? directory.children ?? [] : []).map(child => [child.type, child.name]), observationPluginVisible: readRuntimePlugins(result).some(plugin => plugin.name === paths.plugin) }, { cwd: await fs.realpath(root), items: [['skill', 'native-skill'], ['rule', 'CUSTOM.md']], observationPluginVisible: false });
 			await assert.rejects(fs.stat(paths.patch), { code: 'ENOENT' });
 			await assert.rejects(fs.stat(paths.plugin), { code: 'ENOENT' });
 		} finally {
