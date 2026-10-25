@@ -59,6 +59,8 @@ DSH SDK versions that expose `approval/request` and `user-question/ask` use the 
 
 DSH emits committed SDK session events; its native SDK does not currently expose token deltas through this interface. ZCode's model stream is rendered incrementally and reconciled with committed parts without adding its completion summary twice.
 
+DSH native plugins can handle slash commands locally. Their `command/done` feedback is rendered and saved even when no assistant message or model request is produced. Native command autocomplete is not currently forwarded to VS Code.
+
 ## Validation
 
 ```sh
