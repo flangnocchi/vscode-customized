@@ -2753,6 +2753,12 @@ export class McpListWidget extends Disposable {
 		if (!entry) {
 			return;
 		}
+		const runtimeServer = getActiveSessionServer(entry);
+		if (runtimeServer?.readOnly) {
+			const presentation = getActiveSessionServerPresentation(runtimeServer);
+			DOM.append(actions, $('.mcp-server-disabled-label')).textContent = getMcpStatusPresentation(presentation.status, runtimeServer.disabledReason)?.label ?? '';
+			return;
+		}
 		const label = getMcpEntryLabel(entry);
 		if (!isConnectorMcpEntry(entry) && entry.type !== 'provider-item') {
 			let enabled = this.isInstalledEntryEnabled(entry);
