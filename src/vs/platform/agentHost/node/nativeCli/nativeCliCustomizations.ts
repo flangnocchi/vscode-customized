@@ -12,7 +12,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import type { NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import { AGENT_BUILTIN_CUSTOMIZATION_SCHEME } from '../../common/agentHostCustomizationUri.js';
-import { CustomizationLoadStatus, CustomizationType, customizationId, type Customization, type DirectoryCustomization, type RuleCustomization, type SkillCustomization } from '../../common/state/sessionState.js';
+import { CustomizationLoadStatus, CustomizationType, customizationId, type DirectoryCustomization, type RuleCustomization, type SkillCustomization } from '../../common/state/sessionState.js';
 import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } from './nativeCliTransport.js';
 
 // This observation-only plugin lives in a private temporary directory. It neither
@@ -49,7 +49,7 @@ export function apply(ctx) {
 `;
 
 /** Maps native metadata only. No foreign harness directories or file contents are scanned. */
-export function nativeCliCustomizations(id: NativeCliAgentId, snapshot: NativeRecord): readonly Customization[] {
+export function nativeCliCustomizations(id: NativeCliAgentId, snapshot: NativeRecord): readonly DirectoryCustomization[] {
 	if (snapshot.complete === false) { throw new Error(localize('nativeCli.incompleteCustomizations', "Native customization discovery is incomplete.")); }
 	const directories = new Map<string, DirectoryCustomization>();
 	const seen = new Set<string>();
@@ -114,6 +114,7 @@ async function readZcodeCustomizations(launch: INativeCliLaunch, signal: AbortSi
 	const abort = () => { void connection.shutdown(); };
 	signal.addEventListener('abort', abort, { once: true });
 	try {
+		if (signal.aborted) { throw new CancellationError(); }
 		await connection.request('runtime/capabilities', {}, 15_000);
 		return record(await connection.request('skills/referenceCatalog', { workspace: { workspacePath: launch.cwd, workspaceKey: launch.cwd } }, 15_000));
 	} finally {
@@ -123,6 +124,6 @@ async function readZcodeCustomizations(launch: INativeCliLaunch, signal: AbortSi
 	}
 }
 
-export async function discoverNativeCliCustomizations(id: NativeCliAgentId, launch: INativeCliLaunch, signal: AbortSignal): Promise<readonly Customization[]> {
+export async function discoverNativeCliCustomizations(id: NativeCliAgentId, launch: INativeCliLaunch, signal: AbortSignal): Promise<readonly DirectoryCustomization[]> {
 	return nativeCliCustomizations(id, await (id === 'dsh' ? readDshCustomizations(launch, signal) : readZcodeCustomizations(launch, signal)));
 }
