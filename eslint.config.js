@@ -1801,6 +1801,7 @@ export default defineConfig(
 						'zod', // used by agentHost for Claude client-tool MCP input schemas
 						{ 'when': 'hasNode', 'pattern': 'libsodium-wrappers' },
 						{ 'when': 'hasNode', 'pattern': '@hpke/core' },
+						{ 'when': 'hasNode', 'pattern': 'yaml' }, // native CLI configuration inspection; custom tags are not evaluated
 					]
 				},
 				{

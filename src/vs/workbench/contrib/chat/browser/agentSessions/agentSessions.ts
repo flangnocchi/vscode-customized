@@ -13,6 +13,7 @@ import { isAgentHostTarget, SessionType } from '../../common/chatSessionsService
 import { IChatRequestVariableEntry } from '../../common/attachments/chatVariableEntries.js';
 import { MenuId } from '../../../../../platform/actions/common/actions.js';
 import { isCopilotAgentHostSessionType } from '../../../../../platform/agentHost/common/agentHostSessionType.js';
+import { getNativeCliAgentIcon } from './agentHostProviderIcons.js';
 
 export const AgentSessionChatContextMenu = new MenuId('AgentSessionChatContext');
 
@@ -100,7 +101,7 @@ export function getAgentSessionProviderIcon(provider: AgentSessionTarget): Theme
 		case AgentSessionProviders.AgentHostCopilot:
 			return Codicon.copilot;
 		default:
-			return Codicon.extensions;
+			return getNativeCliAgentIcon(provider) ?? Codicon.extensions;
 	}
 }
 

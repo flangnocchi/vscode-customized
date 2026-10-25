@@ -50,6 +50,7 @@ import { IAgentHostCustomizationService } from './agentHostCustomizationService.
 import { IAgentHostProtectedResourcesService } from './agentHostProtectedResourcesService.js';
 import { AICustomizationManagementSection } from '../../../common/aiCustomizationWorkspaceService.js';
 import { readAgentModelCatalogStatus } from '../../../../../../platform/agentHost/common/agentModelCatalogStatus.js';
+import { getNativeCliAgentIcon } from '../agentHostProviderIcons.js';
 
 const LOCAL_AGENT_HOST_SESSION_TYPE_PREFIX = 'agent-host-';
 
@@ -379,7 +380,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		store.add(this._customizationHarnessService.registerExternalHarness({
 			id: sessionType,
 			label: agent.displayName,
-			icon: ThemeIcon.fromId(Codicon.server.id),
+			icon: getNativeCliAgentIcon(agent.provider) ?? ThemeIcon.fromId(Codicon.server.id),
 			customAgentTarget: agent.provider === 'copilotcli' ? Target.GitHubCopilot : undefined,
 			modelCatalogueStatus,
 			// The Tools section is surfaced for the Copilot CLI agent host only.

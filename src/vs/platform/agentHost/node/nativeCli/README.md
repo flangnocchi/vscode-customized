@@ -23,7 +23,11 @@ The optional `.home` setting supplies `DSH_HOME` or `ZCODE_DATA_BASE_DIR`. For Z
 
 ## Models
 
-DSH starts with `deepseek-official/deepseek-flash`. To expose other configured native routes, use model IDs in `provider/model` form:
+DSH reads the selected SDK profile with the native CLI's boot-free `--dump-config` command. It preserves configured provider/model routes, display names, context limits, reasoning choices and the native default selection. YAML code tags are never evaluated by VS Code, and configuration output is never logged. Built-in model names are read from the installed SDK's schema when needed.
+
+ZCode resolves its catalog before the first user turn in a short-lived native process with an isolated home. Provider definitions are copied privately for inspection, so discovery creates no conversation in the user's history and cannot rewrite the original provider files. The model list and default thinking levels come from the native registry; runtime snapshots refresh that metadata. Account/subscription routes are omitted until the desktop authentication-header bridge is supported.
+
+To override discovery with an explicit model list, use model IDs in `provider/model` form:
 
 ```json
 {
@@ -37,11 +41,13 @@ DSH starts with `deepseek-official/deepseek-flash`. To expose other configured n
 }
 ```
 
-ZCode also publishes its available models and thinking options after a native conversation is created. Provider and model identifiers are taken from its native registry; model IDs may themselves contain slashes. API-key providers use the native provider configuration. ZCode account/subscription models require its separate desktop authentication-header bridge, which this adapter does not implement; selecting one produces an actionable error instead of supplying substitute credentials.
+Model IDs may themselves contain slashes; only the first slash separates the provider. API-key providers use the native provider configuration. Changing the selected model restarts that chat's process and resumes the native conversation with the new route.
 
 ## Persistence and cancellation
 
 Opaque provider data stores the native conversation ID, model and workspace. A provider-owned rendering journal is stored in the exact persistence scope supplied by Agent Host. History reads never start a native process or claim its writer lock. The journal preserves text, reasoning, tools, errors and cancellation already observed by VS Code; native context is restored with the original SDK session ID. It does not import unrelated historical conversations from the desktop application's catalog.
+
+Quick chats without an open workspace use Agent Host's stable scratch folder under `<userHome>/.copilot/chats/<sessionId>`, like the existing Claude provider. Missing scratch folders are recreated on resume, and scratch folders are not published as workspace projects.
 
 Cancellation closes stdin so the runtime can cancel work and flush its native store. Shutdown waits for process exit before escalation or another launch. Startup cancellation is generation-checked so an abandoned launch cannot admit a late prompt. Unexpected process exit rejects pending requests and releases the dead connection for a subsequent resume.
 
@@ -57,7 +63,7 @@ DSH emits committed SDK session events; its native SDK does not currently expose
 
 ```sh
 npm run build-fast -- --client-only
-VSCODE_SKIP_PRELAUNCH=1 ./scripts/test.sh --run src/vs/platform/agentHost/test/node/nativeCliAgent.test.ts
+VSCODE_SKIP_PRELAUNCH=1 ./scripts/test.sh --run src/vs/platform/agentHost/test/node/nativeCliAgent.test.ts --run src/vs/platform/agentHost/test/node/nativeCliModelCatalog.test.ts
 ```
 
 The tests use actual child processes and an in-memory session database. They cover process reuse, per-chat cancellation, startup cancellation, native resume, saved-history restoration, approval decisions, response reconciliation and connection failure. Native runtime acceptance should additionally use isolated DSH/ZCode homes and a loopback model endpoint to exercise the installed protocol versions without changing application credentials.
