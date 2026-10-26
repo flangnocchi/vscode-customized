@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { TestConfigurationService } from '../../../configuration/test/common/testConfigurationService.js';
-import { buildNativeCliAgentEnv, isNativeCliFullAccessMode, isNativeCliPermissionProperty, nativeCliAgentEnv, nativeCliPermissionModeKey } from '../../common/nativeCliAgentConfig.js';
+import { buildNativeCliAgentEnv, isNativeCliFullAccessMode, isNativeCliPermissionProperty, nativeCliAgentDisplayName, nativeCliAgentEnv, nativeCliPermissionModeKey } from '../../common/nativeCliAgentConfig.js';
 
 suite('Native CLI agent configuration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -27,6 +27,7 @@ suite('Native CLI agent configuration', () => {
 
 	test('knows each provider\'s permission property and the one mode of it that approves everything', () => {
 		assert.deepStrictEqual({
+			names: [nativeCliAgentDisplayName('dsh'), nativeCliAgentDisplayName('zcode')],
 			properties: [nativeCliPermissionModeKey('dsh'), nativeCliPermissionModeKey('zcode')].map(isNativeCliPermissionProperty),
 			unrelated: isNativeCliPermissionProperty('autoApprove'),
 			fullAccess: [
@@ -37,6 +38,7 @@ suite('Native CLI agent configuration', () => {
 				isNativeCliFullAccessMode('autoApprove', 'yolo'),
 			],
 		}, {
+			names: ['DeepSeek Harness', 'ZCode'],
 			properties: [true, true],
 			unrelated: false,
 			fullAccess: [true, true, false, false, false],

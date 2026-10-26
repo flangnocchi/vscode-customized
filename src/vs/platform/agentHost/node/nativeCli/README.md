@@ -2,7 +2,7 @@
 
 These opt-in providers expose DeepSeek Harness and ZCode through the existing VS Code Chat and Agent Host session surfaces. Each independent chat owns one native stdio process, which stays alive across turns. Closing or cancelling that process affects its own chat and native descendants. The next send starts a new process and resumes the saved native conversation after the previous process exits.
 
-The providers implement `IAgent`; session identity, chat membership, workspace preparation and protocol state remain owned by Agent Host. The native harness owns model execution, tools, native skills and native MCP configuration. No additional DSH runtime plugin is installed.
+The providers implement `IAgent`; session identity, chat membership, workspace preparation and protocol state remain owned by Agent Host. The native harness owns model execution, tools, native skills and native MCP configuration. Nothing is installed into the SDK profile of DSH or the files of ZCode: the observation extensions described under Customization inventory exist only for the lifetime of the process they extend.
 
 ## Enable
 
@@ -29,7 +29,7 @@ DSH reads the selected SDK profile with the native CLI's boot-free `--dump-confi
 
 ZCode resolves its catalog before the first user turn in a short-lived native process with an isolated home. Provider definitions are copied privately for inspection, so discovery creates no conversation in the user's history and cannot rewrite the original provider files. The model list and default thinking levels come from the native registry; runtime snapshots refresh that metadata. Account/subscription routes are omitted until the desktop authentication-header bridge is supported.
 
-Discovery starts the whole native runtime, so it is bounded: at most two inspections run at once, each is abandoned after 30 seconds, and a failure is logged by its class only (never by the native output). A failed catalog is read again by the first request after 30 seconds, so a repaired configuration needs no restart. The result of inspecting a workspace is reused for five minutes, which keeps a finished turn from starting the runtime again for every other chat of the agent.
+After it starts, the host reads the model catalog and the permission catalog once in the background, so that the pickers are ready when a chat opens. DSH's model catalog needs no runtime, but its permission catalog does: that one start runs the profile's plugins and MCP servers. Each of ZCode's two reads starts a runtime in a private data directory. Discovery starts the whole native runtime, so it is bounded: at most two inspections run at once, each is abandoned after 30 seconds at the latest (a DSH command after 15), and a failure is logged by its class only (never by the native output). A failed catalog is read again by the first request after 30 seconds, so a repaired configuration needs no restart. The result of inspecting a workspace is reused for five minutes, which keeps a finished turn from starting the runtime again for every other chat of the agent.
 
 To override discovery with an explicit model list, use model IDs in `provider/model` form:
 

@@ -11,7 +11,7 @@ import { basename, dirname, isAbsolute, join } from '../../../../base/common/pat
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
-import type { NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
+import { nativeCliAgentDisplayName, type NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import { AGENT_BUILTIN_CUSTOMIZATION_SCHEME } from '../../common/agentHostCustomizationUri.js';
 import { withRuntimeManagedCustomization, withRuntimePlugins, withRuntimeToolInventory, type IRuntimePlugin, type IRuntimeTool } from '../../common/meta/runtimeToolInventory.js';
 import { withMcpServerSourceMeta } from '../../common/meta/mcpCustomizationMeta.js';
@@ -79,7 +79,7 @@ export function nativeCliCustomizations(id: NativeCliAgentId, snapshot: NativeRe
 			tools.push({ name: tool.name, description: typeof tool.description === 'string' ? tool.description : undefined, loading: tool.loading === 'deferred' || tool.loading === 'binding' || tool.loading === 'unavailable' ? tool.loading : 'eager', source: tool.source === 'mcp' || tool.source === 'vscode' ? tool.source : 'builtin', sourceName: typeof tool.sourceName === 'string' ? tool.sourceName : undefined });
 		}
 		const uri = URI.from({ scheme: AGENT_BUILTIN_CUSTOMIZATION_SCHEME, authority: id, path: '/runtime-tools' }).toString();
-		directories.set('runtime-tools', { type: CustomizationType.Directory, id: customizationId(uri), uri, name: 'runtime-tools', enabled: true, writable: false, contents: CustomizationType.Skill, children: [], load: { kind: CustomizationLoadStatus.Loaded }, _meta: withRuntimeToolInventory(undefined, { provider: id, label: id === 'dsh' ? localize('nativeCli.dshLabel', "DeepSeek Harness") : localize('nativeCli.zcodeLabel', "ZCode"), scope: snapshot.scope === 'chat' ? 'chat' : 'workspace', state: snapshot.toolsState === 'unavailable' ? 'unavailable' : 'ready', tools }) });
+		directories.set('runtime-tools', { type: CustomizationType.Directory, id: customizationId(uri), uri, name: 'runtime-tools', enabled: true, writable: false, contents: CustomizationType.Skill, children: [], load: { kind: CustomizationLoadStatus.Loaded }, _meta: withRuntimeToolInventory(undefined, { provider: id, label: nativeCliAgentDisplayName(id), scope: snapshot.scope === 'chat' ? 'chat' : 'workspace', state: snapshot.toolsState === 'unavailable' ? 'unavailable' : 'ready', tools }) });
 	}
 	if (Array.isArray(snapshot.plugins)) {
 		const plugins: IRuntimePlugin[] = [];
@@ -174,10 +174,6 @@ async function readZcodeCustomizations(launch: INativeCliLaunch, signal: AbortSi
 		observer?.dispose();
 		await fs.rm(temporary, { recursive: true, force: true });
 	}
-}
-
-export async function discoverNativeCliCustomizations(id: NativeCliAgentId, launch: INativeCliLaunch, signal: AbortSignal, modelSelection?: NativeRecord): Promise<readonly Customization[]> {
-	return nativeCliCustomizations(id, await discoverNativeCliRuntimeSnapshot(id, launch, signal, modelSelection));
 }
 
 /** Reads metadata in a disposable runtime, without claiming a chat backing. */

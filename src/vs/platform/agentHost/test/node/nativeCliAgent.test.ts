@@ -186,7 +186,6 @@ suite('Native CLI agents', () => {
 			await streaming.p;
 			// The host does not await abort() before it admits the next message.
 			void provider.chats.abort(chat, context(chat));
-			await new Promise(resolve => setTimeout(resolve, 0));
 			await send(provider, chat, 'again', 'again');
 			await held;
 			const history = await provider.chats.getMessages(chat, context(chat));
@@ -431,6 +430,14 @@ suite('Native CLI agents', () => {
 
 	test('rejects malformed process arguments before spawning', () => {
 		assert.throws(() => readNativeCliAgentConfigs({ [nativeCliAgentEnv]: JSON.stringify({ dsh: { enabled: true, args: 'unsafe shell string' } }) }), /Invalid dsh/);
+	});
+
+	test('a native process that cannot start fails its requests and shuts down at once', async () => {
+		const transport = store.add(new NativeCliTransport({ executable: join(tmpdir(), 'no-such-native-binary'), args: [], env: process.env, cwd: tmpdir(), jsonrpc: true }));
+		await assert.rejects(transport.request('anything'), /ENOENT/);
+		const started = performance.now();
+		await transport.shutdown();
+		assert.ok(performance.now() - started < 1000, 'shutdown waited for a process that never started');
 	});
 
 	test('process exit rejects pending requests', async () => {

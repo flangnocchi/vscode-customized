@@ -12,7 +12,13 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/c
 import { CustomizationType } from '../../common/state/sessionState.js';
 import { McpServerStatus } from '../../common/state/protocol/state.js';
 import { isRuntimeManagedCustomization, readRuntimePlugins, readRuntimeToolInventory } from '../../common/meta/runtimeToolInventory.js';
-import { discoverNativeCliCustomizations, nativeCliCustomizations } from '../../node/nativeCli/nativeCliCustomizations.js';
+import type { NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
+import { discoverNativeCliRuntimeSnapshot, nativeCliCustomizations } from '../../node/nativeCli/nativeCliCustomizations.js';
+import type { INativeCliLaunch } from '../../node/nativeCli/nativeCliTransport.js';
+
+async function discoverNativeCliCustomizations(id: NativeCliAgentId, launch: INativeCliLaunch, signal: AbortSignal) {
+	return nativeCliCustomizations(id, await discoverNativeCliRuntimeSnapshot(id, launch, signal));
+}
 
 suite('Native CLI customizations', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();

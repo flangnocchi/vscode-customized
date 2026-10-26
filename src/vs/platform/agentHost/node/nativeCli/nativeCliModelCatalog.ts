@@ -19,7 +19,7 @@ import type { ConfigSchema, ModelSelection } from '../../common/state/sessionSta
 import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } from './nativeCliTransport.js';
 
 /** Copies a file that may hold credentials. The copy is owner-only from the moment it exists. */
-export async function copyPrivateFile(source: string, target: string): Promise<void> {
+async function copyPrivateFile(source: string, target: string): Promise<void> {
 	await fs.writeFile(target, await fs.readFile(source), { mode: 0o600 });
 }
 

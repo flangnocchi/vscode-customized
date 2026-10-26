@@ -150,6 +150,8 @@ export class NativeCliTransport extends Disposable {
 	shutdown(): Promise<void> {
 		return this.shutdownTask ??= (async () => {
 			this.child.stdin.end();
+			// A process that never started has nothing to wait for.
+			if (this.child.pid === undefined) { return; }
 			await this.waitForExit(3000);
 			if (!this.exited.isSettled) {
 				await this.terminate(false);
@@ -157,7 +159,8 @@ export class NativeCliTransport extends Disposable {
 			}
 			if (!this.exited.isSettled) {
 				await this.terminate(true);
-				await this.exited.p;
+				// A process that survives a forced kill must not hold the shutdown of the whole host.
+				await this.waitForExit(5000);
 			}
 		})();
 	}

@@ -90,7 +90,7 @@ export function apply(ctx) {
 // ZCode does not expose its model-facing tool registry over stdio. This bounded
 // CommonJS extension adds inventory and exact-chat permission methods to supported dispatchers.
 // It retains the original filename/resolution and fails closed on changed SDKs.
-export const zcodeRuntimeObserver = String.raw`
+const zcodeRuntimeObserver = String.raw`
 const Module = require('node:module');
 const original = Module.prototype._compile;
 Module.prototype._compile = function(source, filename) {

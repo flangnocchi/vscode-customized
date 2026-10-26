@@ -3,11 +3,17 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { localize } from '../../../nls.js';
 import type { IConfigurationService } from '../../configuration/common/configuration.js';
 
 export const nativeCliAgentIds = ['dsh', 'zcode'] as const;
 export type NativeCliAgentId = typeof nativeCliAgentIds[number];
 export const nativeCliAgentEnv = 'VSCODE_AGENT_HOST_NATIVE_CLI_AGENTS';
+
+/** The name a native provider is known by. */
+export function nativeCliAgentDisplayName(id: NativeCliAgentId): string {
+	return id === 'dsh' ? localize('nativeCli.dshName', "DeepSeek Harness") : localize('nativeCli.zcodeName', "ZCode");
+}
 
 /** The config property that holds a chat's native permission mode. Each provider owns its own mode vocabulary, including while a draft switches harness. */
 export function nativeCliPermissionModeKey(id: NativeCliAgentId): string {

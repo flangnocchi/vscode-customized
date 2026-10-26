@@ -11,7 +11,7 @@ import { MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallStat
 import { record, type NativeRecord } from './nativeCliTransport.js';
 
 /** Extracts readable content from native content blocks, without printing protocol envelopes. */
-export function nativeText(value: unknown): string {
+function nativeText(value: unknown): string {
 	if (typeof value === 'string') { return value; }
 	if (Array.isArray(value)) { return value.map(nativeText).filter(Boolean).join('\n'); }
 	const object = record(value);

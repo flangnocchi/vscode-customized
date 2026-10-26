@@ -17,8 +17,9 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../log/common/log.js';
 import { INativeEnvironmentService } from '../../../environment/common/environment.js';
+import { IInstantiationService } from '../../../instantiation/common/instantiation.js';
 import { AgentSession, type AgentSignal, type IActiveClient, type IAgent, type IAgentChatContext, type IAgentChatDataChange, type IAgentChats, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentMaterializeChatEvent, type IAgentModelInfo, type IAgentResolveChatConfigParams, resolveAgentChatContext } from '../../common/agent.js';
-import { type INativeCliAgentConfig, type NativeCliAgentId, nativeCliAgentEnv, nativeCliAgentIds, nativeCliPermissionModeKey } from '../../common/nativeCliAgentConfig.js';
+import { type INativeCliAgentConfig, type NativeCliAgentId, nativeCliAgentDisplayName, nativeCliAgentEnv, nativeCliAgentIds, nativeCliPermissionModeKey } from '../../common/nativeCliAgentConfig.js';
 import { ISessionDataService } from '../../common/sessionDataService.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, ChatInputResponseKind, TurnState, type ChatInputAnswer, type ChatInputQuestion, type Customization, type ModelSelection, type Turn } from '../../common/state/sessionState.js';
@@ -29,6 +30,7 @@ import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } f
 import { discoverNativeCliRuntimeSnapshot, nativeCliCustomizations } from './nativeCliCustomizations.js';
 import { canObserveNativeCliRuntime, observeNativeCliRuntime, type INativeCliObservedLaunch } from './nativeCliRuntime.js';
 import { IAgentConfigurationService } from '../agentConfigurationService.js';
+import { IAgentHostProviderService } from '../agentHostProviderService.js';
 import { offersNoNativeCliPermissions, readNativeCliPermissions, resolveNativeCliPermissionConfig, type INativeCliPermissions } from './nativeCliPermissions.js';
 
 /** A hung native CLI must not stall chat creation, so every discovery is abandoned after this long. */
@@ -111,6 +113,20 @@ export function readNativeCliAgentConfigs(env: Readonly<NodeJS.ProcessEnv>, onIn
 		}
 	}
 	return result;
+}
+
+/**
+ * Registers the enabled native providers with the host. A mistake in one provider's settings is logged and leaves the
+ * other provider, and the rest of the host, running.
+ */
+export function registerNativeCliAgents(env: Readonly<NodeJS.ProcessEnv>, providerService: IAgentHostProviderService, instantiationService: IInstantiationService, logService: ILogService): void {
+	try {
+		for (const [id, config] of readNativeCliAgentConfigs(env, (id, error) => logService.error(`Failed to configure the ${id} native CLI agent`, error))) {
+			providerService.registerProvider(instantiationService.createInstance(NativeCliAgent, id, config));
+		}
+	} catch (error) {
+		logService.error('Failed to configure native CLI agents', error);
+	}
 }
 
 /**
@@ -303,7 +319,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	}
 
 	getDescriptor() {
-		return { provider: this.id, displayName: this.id === 'dsh' ? localize('dsh.displayName', "DeepSeek Harness") : localize('zcode.displayName', "ZCode"), description: localize('nativeCli.description', "Agent running in a local native CLI process"), capabilities: { multipleChats: {} } };
+		return { provider: this.id, displayName: nativeCliAgentDisplayName(this.id), description: localize('nativeCli.description', "Agent running in a local native CLI process"), capabilities: { multipleChats: {} } };
 	}
 
 	readonly chats: IAgentChats = {
@@ -383,6 +399,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 				const text = await ref.object.getMetadata(this.historyKey(chat));
 				const saved: unknown = text ? JSON.parse(text) : [];
 				if (!Array.isArray(saved) || !saved.every(item => typeof record(item).id === 'string' && Array.isArray(record(item).responseParts) && typeof record(record(item).message).text === 'string')) { throw new Error(localize('nativeCli.invalidHistory', "Invalid saved native agent transcript.")); }
+				// JSON drops an undefined `usage`, while a live turn keeps the key. A restored turn must equal the live one.
 				history = (saved as Turn[]).map(turn => ({ ...turn, usage: turn.usage }));
 			} finally { ref.dispose(); }
 			this.newEntry(chat, resource, backing, history);

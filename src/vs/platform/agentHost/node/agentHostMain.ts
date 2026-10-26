@@ -3,7 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { NativeCliAgent, readNativeCliAgentConfigs } from './nativeCli/nativeCliAgent.js';
 import { DeferredPromise } from '../../../base/common/async.js';
 import { ProxyChannel } from '../../../base/parts/ipc/common/ipc.js';
 import { Server as ChildProcessServer } from '../../../base/parts/ipc/node/ipc.cp.js';
@@ -25,6 +24,7 @@ import { AgentHostStateManager, IAgentHostStateManager } from './agentHostStateM
 import { IAgentConfigurationService } from './agentConfigurationService.js';
 import { IAgentHostCompletions } from './agentHostCompletions.js';
 import { CopilotAgent } from './copilot/copilotAgent.js';
+import { registerNativeCliAgents } from './nativeCli/nativeCliAgent.js';
 import { ClaudeAgent } from './claude/claudeAgent.js';
 import { ClaudeSdkPackage } from './claude/claudeAgentSdkService.js';
 import { CodexAgent } from './codex/codexAgent.js';
@@ -189,13 +189,7 @@ async function startAgentHost(): Promise<void> {
 		const providerService = runtimeServices.providerService;
 		sdkDownloadProgress = runtime.sdkDownloadProgress;
 		providerService.registerProvider(instantiationService.createInstance(CopilotAgent));
-		try {
-			for (const [id, config] of readNativeCliAgentConfigs(process.env, (id, error) => logService.error(`Failed to configure the ${id} native CLI agent`, error))) {
-				providerService.registerProvider(instantiationService.createInstance(NativeCliAgent, id, config));
-			}
-		} catch (error) {
-			logService.error('Failed to configure native CLI agents', error);
-		}
+		registerNativeCliAgents(process.env, providerService, instantiationService, logService);
 		// Claude and Codex providers are gated on two things:
 		//  1. The user-facing enable toggle (`chat.agentHost.<x>Agent.enabled`,
 		//     forwarded as an env var by the starters). Claude defaults to on.
