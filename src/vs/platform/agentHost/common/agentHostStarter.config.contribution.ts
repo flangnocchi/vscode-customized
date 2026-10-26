@@ -320,7 +320,7 @@ configurationRegistry.registerConfiguration({
 			experiment: { mode: 'auto' },
 			agentHost: { key: AgentHostMcpToolRoutingEnabledConfigKey },
 		},
-		...Object.fromEntries(nativeCliAgentIds.flatMap(id => {
+		...Object.fromEntries(nativeCliAgentIds.flatMap((id): [string, AgentHostStarterConfigurationPropertySchema][] => {
 			const prefix = `chat.agentHost.${id}Agent`;
 			return [
 				[`${prefix}.enabled`, { type: 'boolean', default: false, tags: ['experimental'], description: nls.localize('nativeCli.enabled', "Enable the {0} provider in the local agent host. Restart the local agent host after changing this setting.", id) }],

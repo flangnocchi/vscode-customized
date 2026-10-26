@@ -3,10 +3,11 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { promises as fs } from 'fs';
+import { constants, promises as fs } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { isAbsolute, join } from '../../../../base/common/path.js';
-import { DeferredPromise } from '../../../../base/common/async.js';
+import { delimiter, dirname, isAbsolute, join } from '../../../../base/common/path.js';
+import { sanitizeProcessEnvironment } from '../../../../base/common/processes.js';
+import { DeferredPromise, Limiter } from '../../../../base/common/async.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -25,10 +26,27 @@ import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } 
 import { NativeCliTurn } from './nativeCliTurn.js';
 import { ensureWorkspacelessScratchDir } from '../workspacelessScratchDir.js';
 import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
-import { discoverNativeCliCustomizations, discoverNativeCliRuntimeSnapshot, nativeCliCustomizations } from './nativeCliCustomizations.js';
-import { observeNativeCliRuntime } from './nativeCliRuntime.js';
+import { discoverNativeCliRuntimeSnapshot, nativeCliCustomizations } from './nativeCliCustomizations.js';
+import { canObserveNativeCliRuntime, observeNativeCliRuntime, type INativeCliObservedLaunch } from './nativeCliRuntime.js';
 import { IAgentConfigurationService } from '../agentConfigurationService.js';
 import { nativeCliPermissionModeKey, readNativeCliPermissions, resolveNativeCliPermissionConfig, type INativeCliPermissions } from './nativeCliPermissions.js';
+
+/** A hung native CLI must not stall chat creation, so every discovery is abandoned after this long. */
+const nativeDiscoveryTimeoutMs = 30_000;
+/** Discovery launches the whole native runtime (plugins, MCP servers), so only a couple run at once. */
+const nativeDiscoveryConcurrency = 2;
+/** An inspected workspace is reused this long, so a finished turn never relaunches the CLI for idle chats. */
+const nativeInventoryTtlMs = 5 * 60_000;
+/** A failed discovery is not repeated sooner than this; the next demand after it tries again. */
+const nativeDiscoveryRetryMs = 30_000;
+
+/** Names a failure without echoing native output: command lines and stderr can carry credentials. */
+function describeFailure(error: unknown): string {
+	if (error instanceof CancellationError) { return 'cancelled'; }
+	const { code, signal, killed } = record(error);
+	const parts = [typeof code === 'string' || typeof code === 'number' ? `code ${code}` : undefined, typeof signal === 'string' ? `signal ${signal}` : undefined, killed === true ? 'timed out' : undefined];
+	return parts.filter(Boolean).join(', ') || (error instanceof Error ? error.name : typeof error);
+}
 
 interface IBacking {
 	version: 1;
@@ -62,29 +80,61 @@ interface IChat {
 	generation: number;
 }
 
-/** Validates the starter's JSON, rather than trusting environment-provided process arguments. */
-export function readNativeCliAgentConfigs(env: Readonly<NodeJS.ProcessEnv>): ReadonlyMap<NativeCliAgentId, INativeCliAgentConfig> {
+/**
+ * Validates the starter's JSON, rather than trusting environment-provided process arguments. A mistake in one
+ * provider's settings throws, unless `onInvalid` is given: then it is reported there and the other provider stays usable.
+ */
+export function readNativeCliAgentConfigs(env: Readonly<NodeJS.ProcessEnv>, onInvalid?: (id: NativeCliAgentId, error: Error) => void): ReadonlyMap<NativeCliAgentId, INativeCliAgentConfig> {
 	const result = new Map<NativeCliAgentId, INativeCliAgentConfig>();
 	const configs = record(JSON.parse(env[nativeCliAgentEnv] ?? '{}'));
 	for (const id of nativeCliAgentIds) {
 		const config = record(configs[id]);
 		if (config.enabled !== true) { continue; }
-		if ((config.executable !== undefined && typeof config.executable !== 'string') || (config.home !== undefined && typeof config.home !== 'string') || (config.args !== undefined && (!Array.isArray(config.args) || !config.args.every(arg => typeof arg === 'string')))) {
-			throw new Error(localize('nativeCli.invalidLaunch', "Invalid {0} native agent launch configuration.", id));
+		try {
+			if ((config.executable !== undefined && typeof config.executable !== 'string') || (config.home !== undefined && typeof config.home !== 'string') || (config.args !== undefined && (!Array.isArray(config.args) || !config.args.every(arg => typeof arg === 'string')))) {
+				throw new Error(localize('nativeCli.invalidLaunch', "Invalid {0} native agent launch configuration.", id));
+			}
+			const models = Array.isArray(config.models) ? config.models.map(value => {
+				const model = record(value);
+				if (typeof model.id !== 'string' || !model.id || typeof model.name !== 'string') { throw new Error(localize('nativeCli.invalidModel', "Invalid {0} model configuration.", id)); }
+				return { id: model.id, name: model.name };
+			}) : [];
+			result.set(id, { enabled: true, executable: String(config.executable ?? ''), home: String(config.home ?? ''), args: (config.args ?? []) as string[], models });
+		} catch (error) {
+			if (!onInvalid) { throw error; }
+			onInvalid(id, error instanceof Error ? error : new Error(String(error)));
 		}
-		const models = Array.isArray(config.models) ? config.models.map(value => {
-			const model = record(value);
-			if (typeof model.id !== 'string' || !model.id || typeof model.name !== 'string') { throw new Error(localize('nativeCli.invalidModel', "Invalid {0} model configuration.", id)); }
-			return { id: model.id, name: model.name };
-		}) : [];
-		result.set(id, { enabled: true, executable: String(config.executable ?? ''), home: String(config.home ?? ''), args: (config.args ?? []) as string[], models });
 	}
 	return result;
 }
 
+/**
+ * The installed ZCode desktop application whose bundled CLI entry can be run directly. macOS keeps it in
+ * `/Applications`. Elsewhere `zcode` on PATH is a launcher for the Electron binary, and the real directory it leads
+ * to holds `resources`. The first `zcode` on PATH decides, as in a shell.
+ */
+async function installedZcode(env: NodeJS.ProcessEnv, exists: (path: string) => Promise<boolean>): Promise<{ readonly executable: string; readonly resources: string } | undefined> {
+	if (process.platform === 'darwin') {
+		const resources = '/Applications/ZCode.app/Contents/Resources';
+		return await exists(join(resources, 'glm/zcode.cjs')) ? { executable: '/Applications/ZCode.app/Contents/MacOS/ZCode', resources } : undefined;
+	}
+	if (process.platform === 'win32') { return undefined; }
+	for (const directory of (env.PATH ?? '').split(delimiter)) {
+		const launcher = join(directory || '.', 'zcode');
+		let executable: string;
+		try { await fs.access(launcher, constants.X_OK); executable = await fs.realpath(launcher); } catch { continue; }
+		const resources = join(dirname(executable), 'resources');
+		return await exists(join(resources, 'glm/zcode.cjs')) && await exists(join(resources, 'config/provider/zcode-builtin.json')) ? { executable, resources } : undefined;
+	}
+	return undefined;
+}
+
 /** Builds a native launch without modifying either application's configuration. */
 export async function nativeCliLaunch(id: NativeCliAgentId, config: INativeCliAgentConfig, cwd: string, inherited: NodeJS.ProcessEnv = process.env): Promise<INativeCliLaunch> {
+	// The user's environment, without VS Code's and Electron's own process plumbing. The Claude and Copilot providers do the same.
 	const env = { ...inherited };
+	sanitizeProcessEnvironment(env);
+	delete env.NODE_OPTIONS;
 	const exists = async (path: string): Promise<boolean> => { try { await fs.access(path); return true; } catch { return false; } };
 	if (config.executable === process.execPath) { env.ELECTRON_RUN_AS_NODE = '1'; }
 	if (id === 'dsh') {
@@ -93,15 +143,15 @@ export async function nativeCliLaunch(id: NativeCliAgentId, config: INativeCliAg
 		return { executable: config.executable || (process.platform === 'darwin' && await exists(bundled) ? bundled : 'dsh'), args: config.args.length ? config.args : ['--profile', 'sdk'], env, cwd, jsonrpc: true };
 	}
 	if (config.home) { env.ZCODE_DATA_BASE_DIR = config.home; }
-	const resources = '/Applications/ZCode.app/Contents/Resources';
-	if (!config.executable && process.platform === 'darwin' && await exists(join(resources, 'glm/zcode.cjs'))) {
+	const installed = config.executable ? undefined : await installedZcode(env, exists);
+	if (installed) {
 		env.ELECTRON_RUN_AS_NODE = '1';
 		// The desktop's flattened CLI location needs explicit provider paths.
 		const base = env.ZCODE_DATA_BASE_DIR || homedir();
-		const builtin = join(resources, 'config/provider/zcode-builtin.json');
+		const builtin = join(installed.resources, 'config/provider/zcode-builtin.json');
 		env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE ??= builtin;
 		env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE ??= join(base, '.zcode/v2/provider_config.json');
-		return { executable: '/Applications/ZCode.app/Contents/MacOS/ZCode', args: [join(resources, 'glm/zcode.cjs'), ...(config.args.length ? config.args : ['app-server', '--stdio'])], env, cwd, jsonrpc: false };
+		return { executable: installed.executable, args: [join(installed.resources, 'glm/zcode.cjs'), ...(config.args.length ? config.args : ['app-server', '--stdio'])], env, cwd, jsonrpc: false, ...(env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE === builtin ? { installedProviderConfig: builtin } : {}) };
 	}
 	return { executable: config.executable || 'zcode', args: config.args.length ? config.args : ['app-server', '--stdio'], env, cwd, jsonrpc: false };
 }
@@ -126,11 +176,17 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	private shutdownTask: Promise<void> | undefined;
 	private closing = false;
 	private readonly catalogAbort = new AbortController();
-	private readonly catalogReady: Promise<void>;
 	private readonly customizationRequests = new Map<string, Promise<readonly Customization[]>>();
+	/** Throwaway inspections by workspace (and model), shared by the permission catalog and every idle chat. */
+	private readonly inventories = new Map<string, { expires: number; readonly snapshot: Promise<NativeRecord> }>();
+	private readonly discoveries = this._register(new Limiter<unknown>(nativeDiscoveryConcurrency));
 	private defaultModel: ModelSelection | undefined;
+	private catalogLoad: Promise<void> | undefined;
+	private catalogFailedAt: number | undefined;
 	private permissionCatalog: INativeCliPermissions | undefined;
-	private readonly permissionsReady: Promise<void>;
+	private permissionsLoad: Promise<void> | undefined;
+	private permissionsFailedAt: number | undefined;
+	private permissionsObservable = true;
 
 	constructor(
 		readonly id: NativeCliAgentId,
@@ -142,38 +198,98 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	) {
 		super();
 		this._register(toDisposable(() => this.catalogAbort.abort()));
-		this.permissionsReady = this.loadPermissions();
 		if (config.models.length) {
 			this.catalog.set(config.models.map(model => ({ ...model, provider: id, supportsVision: false })), undefined);
 			this.defaultModel = { id: config.models[0].id };
-			this.catalogReady = Promise.resolve();
-		} else {
-			this.catalogReady = this.loadModelCatalog();
 		}
+		// Warm both catalogs in the background. Callers wait on the same bounded, retryable promises.
+		void this.ensurePermissions();
+		void this.ensureCatalog();
+	}
+
+	/** How long one native inspection may run before it is abandoned. */
+	protected get discoveryTimeoutMs(): number { return nativeDiscoveryTimeoutMs; }
+
+	/** Cancelled by shutdown, and by the deadline so that a hung native process cannot hold a caller forever. */
+	private discoverySignal(): AbortSignal {
+		return AbortSignal.any([this.catalogAbort.signal, AbortSignal.timeout(this.discoveryTimeoutMs)]);
+	}
+
+	/** Inspections start the whole native runtime, so a few run at a time and the rest wait their turn. */
+	private discover<T>(task: () => Promise<T>): Promise<T> {
+		return this.discoveries.queue(task) as Promise<T>;
+	}
+
+	/**
+	 * Inspects a workspace in a throwaway native runtime. One result per workspace (and model) is kept for a few
+	 * minutes and shared with concurrent callers, so republishing customizations never relaunches the CLI.
+	 */
+	private discoverSnapshot(cwd: string, modelSelection?: NativeRecord): Promise<NativeRecord> {
+		const key = `${cwd}\n${modelSelection ? JSON.stringify(modelSelection) : ''}`;
+		const now = Date.now();
+		for (const [other, cached] of this.inventories) {
+			if (cached.expires <= now) { this.inventories.delete(other); }
+		}
+		const known = this.inventories.get(key);
+		if (known) { return known.snapshot; }
+		const snapshot = this.discover(async () => discoverNativeCliRuntimeSnapshot(this.id, await nativeCliLaunch(this.id, this.config, cwd), this.discoverySignal(), modelSelection));
+		// Callers that arrive while the inspection runs share it. Once it settles it is kept for a while, unless it
+		// failed or reported itself incomplete: the next caller inspects again.
+		const entry = { expires: Number.POSITIVE_INFINITY, snapshot };
+		this.inventories.set(key, entry);
+		const settle = (keep: boolean) => {
+			if (keep) { entry.expires = Date.now() + nativeInventoryTtlMs; }
+			else if (this.inventories.get(key) === entry) { this.inventories.delete(key); }
+		};
+		void snapshot.then(result => settle(result.complete !== false), () => settle(false));
+		return snapshot;
+	}
+
+	/** Resolves once the permission catalog is known or could not be read. A failure is retried by the first demand after a pause. */
+	private ensurePermissions(): Promise<void> {
+		if (this.permissionCatalog || !this.permissionsObservable || this.closing) { return Promise.resolve(); }
+		if (this.permissionsLoad) { return this.permissionsLoad; }
+		if (this.permissionsFailedAt !== undefined && Date.now() - this.permissionsFailedAt < nativeDiscoveryRetryMs) { return Promise.resolve(); }
+		const load = this.loadPermissions().finally(() => { if (this.permissionsLoad === load) { this.permissionsLoad = undefined; } });
+		return this.permissionsLoad = load;
 	}
 
 	private async loadPermissions(): Promise<void> {
 		try {
-			const launch = await nativeCliLaunch(this.id, this.config, this.environmentService.userHome.fsPath);
-			if (!launch.args.includes('--profile') && !launch.args.some(arg => arg.endsWith('/zcode.cjs'))) { return; }
-			const snapshot = await discoverNativeCliRuntimeSnapshot(this.id, launch, this.catalogAbort.signal);
-			if (!this.closing) { this.permissionCatalog = readNativeCliPermissions(snapshot); }
-		} catch {
-			if (!this.closing) { this.logService.warn('Native permission catalog unavailable', this.id); }
+			const home = this.environmentService.userHome.fsPath;
+			// Only the bundled runtimes can be observed; any other CLI offers no permission choices.
+			if (!canObserveNativeCliRuntime(await nativeCliLaunch(this.id, this.config, home))) { this.permissionsObservable = false; return; }
+			const catalog = readNativeCliPermissions(await this.discoverSnapshot(home));
+			if (!this.closing) {
+				this.permissionCatalog = catalog;
+				this.permissionsFailedAt = catalog ? undefined : Date.now();
+			}
+		} catch (error) {
+			this.permissionsFailedAt = Date.now();
+			if (!this.closing) { this.logService.warn(`Native permission catalog unavailable (${this.id}): ${describeFailure(error)}`); }
 		}
+	}
+
+	/** Resolves once the model catalog is known or could not be read. A failure is retried by the first demand after a pause. */
+	private ensureCatalog(): Promise<void> {
+		if (this.defaultModel || this.closing) { return Promise.resolve(); }
+		if (this.catalogLoad) { return this.catalogLoad; }
+		if (this.catalogFailedAt !== undefined && Date.now() - this.catalogFailedAt < nativeDiscoveryRetryMs) { return Promise.resolve(); }
+		const load = this.loadModelCatalog().finally(() => { if (this.catalogLoad === load) { this.catalogLoad = undefined; } });
+		return this.catalogLoad = load;
 	}
 
 	private async loadModelCatalog(): Promise<void> {
 		try {
-			const launch = await nativeCliLaunch(this.id, this.config, this.environmentService.userHome.fsPath);
-			const catalog = await discoverNativeCliModels(this.id, launch, this.catalogAbort.signal);
-			if (!this.closing) {
-				this.defaultModel = catalog.defaultModel;
-				this.catalog.set(catalog.models, undefined);
-			}
-		} catch {
-			// CLI configuration dumps can contain credentials. Never log their output or parser errors.
-			if (!this.closing) { this.logService.warn('Native model catalog unavailable', this.id); }
+			const catalog = await this.discover(async () => discoverNativeCliModels(this.id, await nativeCliLaunch(this.id, this.config, this.environmentService.userHome.fsPath), this.discoverySignal()));
+			if (this.closing) { return; }
+			this.defaultModel = catalog.defaultModel;
+			this.catalog.set(catalog.models, undefined);
+			this.catalogFailedAt = catalog.defaultModel ? undefined : Date.now();
+		} catch (error) {
+			this.catalogFailedAt = Date.now();
+			// CLI configuration dumps can contain credentials, so a failure is logged by class only, never by its output.
+			if (!this.closing) { this.logService.warn(`Native model catalog unavailable (${this.id}): ${describeFailure(error)}`); }
 		}
 	}
 
@@ -219,7 +335,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	}
 
 	private async create(chat: URI, context: IAgentChatContext, options?: IAgentCreateChatOptions): Promise<IAgentCreateChatResult> {
-		await Promise.all([this.catalogReady, this.permissionsReady]);
+		await Promise.all([this.ensureCatalog(), this.ensurePermissions()]);
 		if (this.closing) { throw new CancellationError(); }
 		if (options?.fork || options?.importConversation) { throw new Error(localize('nativeCli.branching', "Native CLI conversation branching and import are not supported.")); }
 		if (this.entries.has(chat.toString())) { throw new Error(localize('nativeCli.chatExists', "Native agent chat already exists.")); }
@@ -230,7 +346,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		if (!isAbsolute(cwd)) { throw new Error(localize('nativeCli.workspaceRequired', "Native CLI agents require a local workspace folder.")); }
 		if (workspaceless) { await fs.mkdir(cwd, { recursive: true }); }
 		const model = options?.model ?? this.defaultModel;
-		if (!model) { throw new Error(localize('nativeCli.modelsUnavailable', "Could not read the {0} model catalog. Check its native provider configuration and restart the local agent host.", this.id)); }
+		if (!model) { throw new Error(localize('nativeCli.modelsUnavailable', "Could not read the {0} model catalog. Check its native provider configuration and try again.", this.id)); }
 		const permissionMode = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, options?.config).values[nativeCliPermissionModeKey(this.id)];
 		const entry = this.newEntry(chat, context.resource, { version: 1, provider: this.id, nativeId: this.id === 'zcode' ? `sess_${generateUuid()}` : generateUuid(), cwd, model, workspaceless, persisted: false, createdAt: Date.now(), modifiedAt: Date.now() });
 		if (typeof permissionMode === 'string') { entry.backing.permissionMode = permissionMode; }
@@ -271,10 +387,11 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		if (!force && Date.now() - entry.lastSaved < 500) { return entry.write; }
 		entry.lastSaved = Date.now();
 		const text = JSON.stringify(entry.history);
-		entry.write = entry.write.catch(error => this.logService.error('Native agent transcript persistence failed', error)).then(async () => {
+		// A failed write is logged here and never rejects the chain: the turn it belongs to has already finished.
+		entry.write = entry.write.then(async () => {
 			const ref = this.dataService.openDatabase(entry.resource);
 			try { await ref.object.setMetadata(this.historyKey(entry.uri), text); } finally { ref.dispose(); }
-		});
+		}).catch(error => this.logService.error('Native agent transcript persistence failed', error));
 		return entry.write;
 	}
 
@@ -291,25 +408,26 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			if (entry.backing.workspaceless) { await fs.mkdir(entry.backing.cwd, { recursive: true }); }
 			const launch = await nativeCliLaunch(this.id, this.config, entry.backing.cwd);
 			let temporary: string | undefined;
-			if (this.id === 'zcode' && !this.config.executable && launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE?.startsWith('/Applications/')) {
+			if (launch.installedProviderConfig) {
 				temporary = await fs.mkdtemp(join(tmpdir(), 'vscode-zcode-provider-'));
 				try {
 					const copy = join(temporary, 'zcode-builtin.json');
-					await fs.copyFile(launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, copy);
+					await fs.copyFile(launch.installedProviderConfig, copy);
 					launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = copy;
 				} catch (error) { await fs.rm(temporary, { recursive: true, force: true }); throw error; }
 			}
-			if (entry.generation !== generation || entry.disposed || this.closing) {
-				if (temporary) { await fs.rm(temporary, { recursive: true, force: true }); }
-				throw new CancellationError();
-			}
-			const observer = !this.config.executable || launch.args.includes('--profile') || launch.args.some(arg => arg.endsWith('/zcode.cjs')) ? await observeNativeCliRuntime(this.id, launch) : undefined;
-			if (entry.generation !== generation || entry.disposed || this.closing) {
+			let observer: INativeCliObservedLaunch | undefined;
+			let connection: NativeCliTransport;
+			try {
+				if (entry.generation !== generation || entry.disposed || this.closing) { throw new CancellationError(); }
+				observer = canObserveNativeCliRuntime(launch) ? await observeNativeCliRuntime(this.id, launch) : undefined;
+				if (entry.generation !== generation || entry.disposed || this.closing) { throw new CancellationError(); }
+				connection = new NativeCliTransport(observer?.launch ?? launch);
+			} catch (error) {
 				observer?.dispose();
 				if (temporary) { await fs.rm(temporary, { recursive: true, force: true }); }
-				throw new CancellationError();
+				throw error;
 			}
-			const connection = new NativeCliTransport(observer?.launch ?? launch);
 			entry.process = connection;
 			const store = entry.processStore = new DisposableStore();
 			store.add(connection);
@@ -342,7 +460,15 @@ export class NativeCliAgent extends Disposable implements IAgent {
 					await connection.request('runtime/capabilities', {});
 					// Discover the native model defaults before selecting a route: ZCode
 					// requires an explicit thinking level for some configured models.
-					const snapshot = record(await connection.request(entry.backing.persisted ? 'session/resume' : 'session/create', { sessionId: entry.backing.nativeId, workspace: { workspacePath: entry.backing.cwd, workspaceKey: entry.backing.cwd }, ...(entry.backing.persisted ? {} : { mode: 'build' }) }));
+					const session = { sessionId: entry.backing.nativeId, workspace: { workspacePath: entry.backing.cwd, workspaceKey: entry.backing.cwd } };
+					let snapshot: NativeRecord;
+					try {
+						snapshot = record(await connection.request(entry.backing.persisted ? 'session/resume' : 'session/create', { ...session, ...(entry.backing.persisted ? {} : { mode: 'build' }) }));
+					} catch (error) {
+						// ZCode only keeps a session that has been used. Starting over loses nothing when no turn ever completed.
+						if (!entry.backing.persisted || entry.history.some(turn => turn.state === TurnState.Complete)) { throw error; }
+						snapshot = record(await connection.request('session/create', { ...session, mode: 'build' }));
+					}
 					this.updateZcodeModels(snapshot);
 					await connection.request('session/subscribe', { sessionId: entry.backing.nativeId, deliveryKind: 'web-remote-replayable', includeSnapshot: false });
 				}
@@ -378,6 +504,12 @@ export class NativeCliAgent extends Disposable implements IAgent {
 
 	private async send(chat: URI, prompt: string, turnId: string, roots: readonly URI[] | undefined, context: IAgentChatContext): Promise<void> {
 		const entry = this.require(chat);
+		// Stop and a crash leave the chat busy until its process has exited. Admitting a message sooner would be
+		// refused as still running (DSH) or silently cancelled by the exit (ZCode).
+		while (entry.stopping) {
+			await entry.stopping.catch(() => { });
+			this.require(chat);
+		}
 		const generation = entry.generation;
 		if (entry.active) { throw new Error(localize('nativeCli.alreadyRunning', "A native agent turn is already running.")); }
 		if (roots && (roots.length > 1 || roots.some(directory => directory.scheme !== 'file'))) { throw new Error(localize('nativeCli.singleRoot', "Native CLI agents support one local workspace folder per chat.")); }
@@ -391,11 +523,15 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		void completion.p.catch(() => { });
 		entry.history.push(turn.turn);
 		try {
-			await this.permissionsReady;
+			await this.ensurePermissions();
 			if (entry.generation !== generation || entry.active !== turn || entry.stopping || this.closing) { throw new CancellationError(); }
 			const values = this.agentConfigurationService.getChatConfigValues({ session: context.owner.get().toString(), chat: chat.toString() });
 			const permissionKey = nativeCliPermissionModeKey(this.id);
-			const permissionConfig = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, { ...values, [permissionKey]: values?.[permissionKey] ?? entry.backing.permissionMode ?? this.permissionCatalog?.defaultMode });
+			const requestedMode = values?.[permissionKey] ?? entry.backing.permissionMode;
+			// A chat that was given a mode must never fall back to the runtime's own default, for example because
+			// the catalog could not be read in time. A runtime that cannot report modes at all never offered any.
+			if (typeof requestedMode === 'string' && !this.permissionCatalog && this.permissionsObservable) { throw new Error(localize('nativeCli.permissions.unavailable', "The native runtime has not reported its permission modes, so the mode chosen for this chat cannot be applied. Try again in a moment.")); }
+			const permissionConfig = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, { ...values, [permissionKey]: requestedMode ?? this.permissionCatalog?.defaultMode });
 			const permissionMode = permissionConfig.values[permissionKey];
 			const connection = await this.ensureProcess(entry);
 			if (entry.generation !== generation || entry.active !== turn || entry.stopping) { throw new CancellationError(); }
@@ -438,7 +574,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			entry.active.dsh(event);
 			if (event.type === 'turn/end') {
 				const reason = record(record(event.data).reason);
-				if (reason.kind === 'error' || reason.kind === 'failed') { void entry.completion?.error(new Error(String(reason.message ?? 'DeepSeek Harness turn failed.'))); }
+				if (reason.kind === 'error' || reason.kind === 'failed') { void entry.completion?.error(new Error(String(reason.message ?? localize('nativeCli.dshFailed', "DeepSeek Harness turn failed.")))); }
 			}
 		} else if (this.id === 'zcode' && method === 'session/event' && params.sessionId === entry.backing.nativeId) {
 			const result = entry.active.zcode(params);
@@ -470,7 +606,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		entry.pending.add(deferred);
 		this.permissions.set(key, { chat: entry, deferred, method });
 		if (permission) {
-			turn.tool(id, String(params.toolName ?? 'tool'), params.input, true);
+			turn.tool(id, String(params.toolName ?? 'tool'), params.input, true, typeof params.reason === 'string' && params.reason ? params.reason : undefined);
 		} else {
 			const questions: ChatInputQuestion[] = (Array.isArray(params.questions) ? params.questions : []).map((raw, index) => {
 				const q = record(raw);
@@ -539,7 +675,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	}
 
 	async resolveChatConfig(params: IAgentResolveChatConfigParams = {}) {
-		await this.permissionsReady;
+		await this.ensurePermissions();
 		return resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, params.config);
 	}
 	getInheritedChatConfig() { return undefined; }
@@ -560,7 +696,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 					let snapshot: NativeRecord;
 					try { snapshot = record(await connection.request('vscode/runtimeInventory', { sessionId: entry.backing.nativeId, ...(this.id === 'zcode' ? { modelSelection: this.zcodeModel(entry.backing.model) } : {}) }, 15_000)); }
 					catch {
-						if (this.id === 'dsh') { return discoverNativeCliCustomizations(this.id, await nativeCliLaunch(this.id, this.config, cwd), this.catalogAbort.signal); }
+						if (this.id === 'dsh') { return nativeCliCustomizations(this.id, await this.discoverSnapshot(cwd)); }
 						const skills = record(await connection.request('skills/referenceCatalog', { workspace: { workspacePath: cwd, workspaceKey: cwd } }, 15_000));
 						snapshot = { ...skills, scope: 'chat', tools: [], toolsState: 'unavailable' };
 					}
@@ -568,7 +704,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 					if (entry.process !== connection || entry.stopping || this.closing) { throw new CancellationError(); }
 					return nativeCliCustomizations(this.id, snapshot);
 				})()
-				: (async () => discoverNativeCliCustomizations(this.id, await nativeCliLaunch(this.id, this.config, cwd), this.catalogAbort.signal, this.id === 'zcode' && entry ? this.zcodeModel(entry.backing.model) : undefined))();
+				: (async () => nativeCliCustomizations(this.id, await this.discoverSnapshot(cwd, this.id === 'zcode' && entry ? this.zcodeModel(entry.backing.model) : undefined)))();
 			this.customizationRequests.set(key, request);
 		}
 		try { return await request; }
@@ -589,7 +725,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	shutdown(): Promise<void> {
 		this.closing = true;
 		this.catalogAbort.abort();
-		return this.shutdownTask ??= Promise.all([this.catalogReady, this.permissionsReady, ...[...this.customizationRequests.values()].map(request => request.catch(() => { })), ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })]).then(() => { });
+		return this.shutdownTask ??= Promise.all([this.catalogLoad, this.permissionsLoad, ...[...this.customizationRequests.values()].map(request => request.catch(() => { })), ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })]).then(() => { });
 	}
 	override dispose(): void { void this.shutdown(); super.dispose(); }
 }

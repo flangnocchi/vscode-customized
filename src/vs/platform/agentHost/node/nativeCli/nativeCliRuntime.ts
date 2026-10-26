@@ -54,18 +54,21 @@ export function apply(ctx) {
   Server.prototype.handleRequest = async function(method, params) {
    if (!this.vscodeInventoryObserver) {
     this.vscodeInventoryObserver = true;
-    this.disposers.push(ctx.on('tools/change', () => {
-     for (const sessionId of this.sessions.keys()) this.transport.notify('vscode/runtimeInventoryChanged', { sessionId });
-    }));
-    this.disposers.push(ctx.on('approval/request', async req => {
-     if (this.sessions.size !== 1 || typeof req.callId !== 'string') return 'unavailable';
-     const sessionId = this.sessions.keys().next().value;
-     const display = req.displayReason;
-     const reason = typeof display === 'string' ? display : display?.[(process.env.VSCODE_NATIVE_UI_LANGUAGE ?? 'en').startsWith('zh') ? 'zh' : 'en'] ?? req.reason;
-     const result = await this.transport.request('approval/request', { sessionId, toolCallId: req.callId,
-      toolName: req.toolName, input: { reason }, reason }, req.signal);
-     return ['allowed-once', 'rejected', 'cancelled', 'unavailable'].includes(result?.outcome) ? result.outcome : 'unavailable';
-    }));
+    try {
+     this.disposers.push(ctx.on('tools/change', () => {
+      for (const sessionId of this.sessions.keys()) this.transport.notify('vscode/runtimeInventoryChanged', { sessionId });
+     }));
+     // The SDK's approval request names the tool call and why it needs a decision. It carries no tool input: the
+     // client already has that from the call's own event, and must not have it replaced.
+     this.disposers.push(ctx.on('approval/request', async req => {
+      if (this.sessions.size !== 1 || typeof req.callId !== 'string') return 'unavailable';
+      const sessionId = this.sessions.keys().next().value;
+      const display = req.displayReason;
+      const reason = typeof display === 'string' ? display : display?.[(process.env.VSCODE_NATIVE_UI_LANGUAGE ?? 'en').startsWith('zh') ? 'zh' : 'en'] ?? req.reason;
+      const result = await this.transport.request('approval/request', { sessionId, toolCallId: req.callId, toolName: req.toolName, reason }, req.signal);
+      return ['allowed-once', 'rejected', 'cancelled', 'unavailable'].includes(result?.outcome) ? result.outcome : 'unavailable';
+     }));
+    } catch { /* A changed SDK keeps working without live inventory and relayed approvals; the SDK then refuses what needs approval. */ }
    }
    if (method !== 'vscode/runtimeInventory' && method !== 'vscode/setPermissionMode') return original.call(this, method, params);
    const session = this.sessions.get(params.sessionId);
@@ -92,10 +95,15 @@ const Module = require('node:module');
 const original = Module.prototype._compile;
 Module.prototype._compile = function(source, filename) {
  if (filename === process.env.VSCODE_ZCODE_OBSERVER_TARGET) {
-  const marker = /case ([\w$]+)\.runtimeCapabilities:\{let [\w$]+=[\w$]+\.parse\(([\w$]+)\.params\?\?\{\}\);/g;
-  const matches = [...source.matchAll(marker)];
-  if (matches.length !== 1) { Module.prototype._compile = original; return original.call(this, source, filename); }
-  const match = matches[0], request = match[2];
+  // The dispatcher is the one method that switches on request.method and answers runtime/capabilities. Newer
+  // builds answer it inline; older ones parse its params first, which is where the request name was read from.
+  const dispatchers = [...source.matchAll(/async dispatchRequest\(([\w$]+)\)\{switch\(\1\.method\)\{/g)]
+   .filter(candidate => { const capability = source.indexOf('.runtimeCapabilities:', candidate.index); return capability !== -1 && capability - candidate.index < 65536; });
+  const legacy = [...source.matchAll(/case ([\w$]+)\.runtimeCapabilities:\{let [\w$]+=[\w$]+\.parse\(([\w$]+)\.params\?\?\{\}\);/g)];
+  const found = dispatchers.length ? dispatchers : legacy;
+  if (found.length !== 1) { Module.prototype._compile = original; return original.call(this, source, filename); }
+  const insertAt = dispatchers.length ? found[0].index + found[0][0].length : found[0].index;
+  const request = dispatchers.length ? found[0][1] : found[0][2];
   const modeSchemas = [...source.matchAll(/\b[\w$]+=[\w$]+\.object\(\{sessionId:[\w$]+,mode:(?<mode>[\w$]+),expectedRevision:/g)];
   const permissionModes = modeSchemas.length === 1 ? modeSchemas[0].groups.mode + '.options' : '[]';
   const extension = "case 'vscode/setPermissionMode': {const params=" + request + ".params;" +
@@ -121,7 +129,7 @@ Module.prototype._compile = function(source, filename) {
    "const userInstructions=runtime.contextSourceSnapshot?.userInstructions;" +
    "const instructions=[...(userInstructions?.sources??[]),userInstructions].filter(s=>typeof s?.filePath==='string').map(s=>({absolutePath:s.filePath}));" +
    "return {complete:true,scope:'chat',skills:skills.skills,tools,agents,mcpServers,instructions,permissions:{options:" + permissionModes + ".map(id=>({id,name:id})),defaultMode:runtime.getPlanEnabled?.()?'plan':runtime.getMode()}}; }";
-  source = source.slice(0, match.index) + extension + source.slice(match.index);
+  source = source.slice(0, insertAt) + extension + source.slice(insertAt);
   Module.prototype._compile = original;
  }
  return original.call(this, source, filename);
@@ -130,6 +138,14 @@ Module.prototype._compile = function(source, filename) {
 
 export interface INativeCliObservedLaunch extends IDisposable {
 	readonly launch: INativeCliLaunch;
+}
+
+const dshProfile = /^--profile(?:=|$)/;
+const zcodeEntry = /(?:^|[/\\])zcode\.cjs$/;
+
+/** Only the DSH profile server and ZCode's CommonJS entry can be extended; any other CLI is launched untouched. */
+export function canObserveNativeCliRuntime(launch: INativeCliLaunch): boolean {
+	return launch.args.some(arg => dshProfile.test(arg) || zcodeEntry.test(arg));
 }
 
 /** Owns an observation extension for exactly as long as its native child. */
@@ -145,7 +161,7 @@ export async function observeNativeCliRuntime(id: NativeCliAgentId, launch: INat
 			await fs.writeFile(patch, `- insert: ${JSON.stringify(entries)}\n`, { mode: 0o600 });
 			observed = { ...launch, args: [...launch.args, '--patch', patch], env: { ...launch.env, VSCODE_NATIVE_UI_LANGUAGE: language } };
 		} else {
-			const target = launch.args.find(arg => /(?:^|[/\\])zcode\.cjs$/.test(arg));
+			const target = launch.args.find(arg => zcodeEntry.test(arg));
 			// Custom executables may implement the extension themselves. Do not
 			// rewrite arbitrary scripts or add unsupported flags to other CLIs.
 			observed = target ? { ...launch, args: ['--require', script, ...launch.args], env: { ...launch.env, VSCODE_ZCODE_OBSERVER_TARGET: await fs.realpath(target) } } : launch;

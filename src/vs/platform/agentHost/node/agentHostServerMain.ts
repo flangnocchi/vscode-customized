@@ -235,7 +235,7 @@ async function main(): Promise<void> {
 		sdkDownloadProgress = runtime.sdkDownloadProgress;
 		providerService.registerProvider(instantiationService.createInstance(CopilotAgent));
 		try {
-			for (const [id, config] of readNativeCliAgentConfigs(process.env)) {
+			for (const [id, config] of readNativeCliAgentConfigs(process.env, (id, error) => logService.error(`Failed to configure the ${id} native CLI agent`, error))) {
 				providerService.registerProvider(instantiationService.createInstance(NativeCliAgent, id, config));
 			}
 		} catch (error) {

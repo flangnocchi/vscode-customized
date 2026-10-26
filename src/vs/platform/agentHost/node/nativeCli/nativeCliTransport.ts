@@ -24,6 +24,8 @@ export interface INativeCliLaunch {
 	readonly env: NodeJS.ProcessEnv;
 	readonly cwd: string;
 	readonly jsonrpc: boolean;
+	/** The provider definitions inside an installed application. The runtime gets a private copy, never the original. */
+	readonly installedProviderConfig?: string;
 }
 
 /** One duplex NDJSON connection, exclusively owned by one chat. */
@@ -58,6 +60,8 @@ export class NativeCliTransport extends Disposable {
 			while ((newline = buffer.indexOf('\n')) !== -1) {
 				const line = buffer.slice(0, newline);
 				buffer = buffer.slice(newline + 1);
+				// Runtimes may print blank lines around banners. They are not protocol frames.
+				if (!line.trim()) { continue; }
 				try {
 					this.accept(record(JSON.parse(line)));
 				} catch {

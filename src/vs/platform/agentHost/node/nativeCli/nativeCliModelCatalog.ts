@@ -18,6 +18,27 @@ import type { NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import type { ConfigSchema, ModelSelection } from '../../common/state/sessionState.js';
 import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } from './nativeCliTransport.js';
 
+/** Copies a file that may hold credentials. The copy is owner-only from the moment it exists. */
+export async function copyPrivateFile(source: string, target: string): Promise<void> {
+	await fs.writeFile(target, await fs.readFile(source), { mode: 0o600 });
+}
+
+/**
+ * A ZCode environment with a data directory of its own and private copies of the provider definitions, so that
+ * inspecting ZCode never creates history in, or rewrites, the user's data. A definition that is absent is left out.
+ */
+export async function isolatedZcodeEnvironment(launch: INativeCliLaunch, directory: string): Promise<NodeJS.ProcessEnv> {
+	const env: NodeJS.ProcessEnv = { ...launch.env, ZCODE_DATA_BASE_DIR: directory };
+	const personal = launch.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE ?? join(launch.env.ZCODE_DATA_BASE_DIR || homedir(), '.zcode/v2/provider_config.json');
+	for (const [key, source] of [['ZCODE_PERSONAL_PROVIDER_CONFIG_FILE', personal], ['ZCODE_BUILTIN_PROVIDER_CONFIG_FILE', launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE]] as const) {
+		delete env[key];
+		if (!source) { continue; }
+		const target = join(directory, `${key}.json`);
+		try { await copyPrivateFile(source, target); env[key] = target; } catch { /* Missing or unreadable: the native default applies. */ }
+	}
+	return env;
+}
+
 export interface INativeCliModelCatalog {
 	readonly models: readonly IAgentModelInfo[];
 	readonly defaultModel: ModelSelection | undefined;
@@ -124,17 +145,7 @@ async function readZcodeCatalog(launch: INativeCliLaunch, signal: AbortSignal): 
 	const store = new DisposableStore();
 	let connection: NativeCliTransport | undefined;
 	try {
-		const env: NodeJS.ProcessEnv = { ...launch.env, ZCODE_DATA_BASE_DIR: temporary };
-		const copy = async (source: string, filename: string): Promise<string | undefined> => {
-			try { await fs.access(source); } catch { return undefined; }
-			const target = join(temporary, filename);
-			await fs.copyFile(source, target);
-			await fs.chmod(target, 0o600);
-			return target;
-		};
-		const personal = launch.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE ?? join(launch.env.ZCODE_DATA_BASE_DIR || homedir(), '.zcode/v2/provider_config.json');
-		env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE = await copy(personal, 'provider_config.json');
-		if (launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE) { env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = await copy(launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, 'builtin.json'); }
+		const env = await isolatedZcodeEnvironment(launch, temporary);
 		const cwd = join(temporary, 'workspace');
 		await fs.mkdir(cwd);
 		if (signal.aborted) { throw new CancellationError(); }

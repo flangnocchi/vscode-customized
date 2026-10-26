@@ -18,8 +18,8 @@ import { INativeEnvironmentService } from '../../../environment/common/environme
 import { type IAgentChatContext, fixedChatOwnerRef } from '../../common/agent.js';
 import { nativeCliAgentEnv, type INativeCliAgentConfig, type NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import { ActionType } from '../../common/state/sessionActions.js';
-import { ResponsePartKind, TurnState, type Turn } from '../../common/state/sessionState.js';
-import { NativeCliAgent, readNativeCliAgentConfigs } from '../../node/nativeCli/nativeCliAgent.js';
+import { MessageKind, ResponsePartKind, TurnState, type Turn } from '../../common/state/sessionState.js';
+import { NativeCliAgent, nativeCliLaunch, readNativeCliAgentConfigs } from '../../node/nativeCli/nativeCliAgent.js';
 import { NativeCliTransport } from '../../node/nativeCli/nativeCliTransport.js';
 import { NativeCliTurn } from '../../node/nativeCli/nativeCliTurn.js';
 import { TestSessionDatabase, createSessionDataService } from '../common/sessionTestHelpers.js';
@@ -42,16 +42,19 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  case 'initialize':setTimeout(()=>send({id:m.id,result:{serverInfo:{name:'fixture'}}}),10);break;
  case 'runtime/capabilities':send({id:m.id,result:{historyFirst:true}});break;
  case 'session/create':case 'session/resume':case 'session/working-directory/get':
-  session=p.sessionId;restored=m.method==='session/resume';if(!m.jsonrpc){creation=m.id;send({id:'preferences',method:'session/requestRuntimePreferences',params:{sessionId:session,scope:'runtime-materialization'}});break;}send({id:m.id,result:{settings:{model:{available:[{ref:{providerId:'fixture',modelId:'one'},label:'Fixture Model'}]}}}});break;
+  session=p.sessionId;restored=m.method==='session/resume';
+	if(process.env.NATIVE_FIXTURE_STORE&&restored&&!require('fs').existsSync(require('path').join(process.env.NATIVE_FIXTURE_STORE,session))){send({id:m.id,error:{message:'Session not found: '+session}});break;}
+	if(!m.jsonrpc){creation=m.id;send({id:'preferences',method:'session/requestRuntimePreferences',params:{sessionId:session,scope:'runtime-materialization'}});break;}send({id:m.id,result:{settings:{model:{available:[{ref:{providerId:'fixture',modelId:'one'},label:'Fixture Model'}]}}}});break;
  case 'session/subscribe':send({id:m.id,result:{}});break;
  case 'session/prompt':case 'session/send': {
 	  done=false;waiter=undefined;const dialect=m.method==='session/prompt'?'dsh':'zcode';
+	if(process.env.NATIVE_FIXTURE_STORE)require('fs').writeFileSync(require('path').join(process.env.NATIVE_FIXTURE_STORE,session),'');
 	  if(dialect==='dsh'&&!Array.isArray(p.contentBlocks)){send({id:m.id,error:{message:'contentBlocks required'}});break;}
 	  const prompt=dialect==='dsh'?p.contentBlocks.map(b=>b.text||'').join(''):p.content;
   send({id:m.id,result:dialect==='dsh'?{messageId:'message'}:{accepted:true}});
 	  if(prompt==='crash'){process.exit(2);break;}
 	  if(prompt==='hold'){if(dialect==='dsh')dsh('assistant/message',{message:{content:[{type:'text',text:'waiting'}]}});else event('part.delta',{partId:'answer',field:'text',delta:'waiting'});break;}
-	  if(prompt==='permission'){send({id:'permission',method:'approval/request',params:{sessionId:session,callId:'call-1',toolName:'write'}});break;}
+	  if(prompt==='permission'){send({id:'permission',method:'approval/request',params:{sessionId:session,callId:'call-1',toolName:'write',reason:'Write /workspace/a.txt'}});break;}
   if(dialect==='dsh'&&prompt.startsWith('/output-style')){dsh('command/done',{commandId:'style',kind:prompt.endsWith('missing')?'error':'success',text:prompt.endsWith('missing')?'Unknown output style: missing':'Session style: concise'});dsh('turn/end',{reason:{kind:'completed'}});done=true;if(waiter)send({id:waiter,result:{}});break;}
   finish('pid='+process.pid+';resumed='+restored,dialect);break;
  }
@@ -161,6 +164,28 @@ suite('Native CLI agents', () => {
 		await provider.shutdown();
 	});
 
+	for (const dialect of ['dsh', 'zcode'] as const) {
+		test(`${dialect}: a message sent right after Stop waits for the old process and is answered`, async () => {
+			const provider = agent(dialect);
+			const chat = await create(provider, `${dialect}-stop-then-send`);
+			const streaming = new DeferredPromise<void>();
+			store.add(provider.onDidChatProgress(signal => {
+				if (signal.kind === 'action' && signal.resource.toString() === chat.toString() && signal.action.type === ActionType.ChatDelta) { void streaming.complete(); }
+			}));
+			const held = send(provider, chat, 'hold', 'held');
+			await streaming.p;
+			// The host does not await abort() before it admits the next message.
+			void provider.chats.abort(chat, context(chat));
+			await new Promise(resolve => setTimeout(resolve, 0));
+			await send(provider, chat, 'again', 'again');
+			await held;
+			const history = await provider.chats.getMessages(chat, context(chat));
+			assert.deepStrictEqual(history.map(turn => turn.state), [TurnState.Cancelled, TurnState.Complete]);
+			assert.match(response(history[1]), /resumed=true/);
+			await provider.shutdown();
+		});
+	}
+
 	test('cancellation before startup cannot admit a late prompt', async () => {
 		const provider = agent('dsh');
 		const chat = await create(provider, 'cancel-startup');
@@ -176,12 +201,18 @@ suite('Native CLI agents', () => {
 	test('native approval requests return the selected decision without completing the turn early', async () => {
 		const provider = agent('dsh');
 		const chat = await create(provider, 'permission');
+		const asked: { title: unknown; input: unknown }[] = [];
 		store.add(provider.onDidChatProgress(signal => {
-			if (signal.kind === 'action' && signal.action.type === ActionType.ChatToolCallReady && !signal.action.confirmed) { provider.respondToPermissionRequest(signal.action.toolCallId, false); }
+			if (signal.kind === 'action' && signal.action.type === ActionType.ChatToolCallReady && !signal.action.confirmed) {
+				asked.push({ title: signal.action.confirmationTitle, input: signal.action.toolInput });
+				provider.respondToPermissionRequest(signal.action.toolCallId, false);
+			}
 		}));
 		await send(provider, chat, 'permission', 'permission-turn');
 		const turns = await provider.chats.getMessages(chat, context(chat));
 		assert.match(response(turns[0]), /rejected/);
+		// The request names why it needs a decision. It must not carry a made-up input over the one the call already showed.
+		assert.deepStrictEqual(asked, [{ title: 'Write /workspace/a.txt', input: undefined }]);
 		await provider.shutdown();
 	});
 
@@ -236,6 +267,123 @@ suite('Native CLI agents', () => {
 		const transport = store.add(new NativeCliTransport({ executable: process.execPath, args: ['-e', script], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, cwd: tmpdir(), jsonrpc: true }));
 		assert.strictEqual(await transport.request('unicode'), '你好🌱');
 		await transport.shutdown();
+	});
+
+	test('a malformed provider configuration is reported and does not disable the other provider', () => {
+		const invalid: string[] = [];
+		const configs = readNativeCliAgentConfigs({ [nativeCliAgentEnv]: JSON.stringify({ dsh: { enabled: true, args: 'unsafe shell string' }, zcode: { enabled: true, models: [{ id: 'provider/model', name: 'Model' }] } }) }, (id, error) => invalid.push(`${id}: ${error.message}`));
+		assert.deepStrictEqual({ registered: [...configs.keys()], invalid }, { registered: ['zcode'], invalid: ['dsh: Invalid dsh native agent launch configuration.'] });
+		const badModel = readNativeCliAgentConfigs({ [nativeCliAgentEnv]: JSON.stringify({ dsh: { enabled: true, models: [{ id: '', name: 'x' }] }, zcode: { enabled: true } }) }, (id, error) => invalid.push(`${id}: ${error.message}`));
+		assert.deepStrictEqual([...badModel.keys()], ['zcode']);
+	});
+
+	test('blank lines between protocol frames are not frames', async () => {
+		const script = `process.stdin.once('data',()=>{process.stdout.write('\\n\\r\\n   \\n');process.stdout.write(JSON.stringify({id:1,result:'ok'})+'\\n')})`;
+		const transport = store.add(new NativeCliTransport({ executable: process.execPath, args: ['-e', script], env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, cwd: tmpdir(), jsonrpc: true }));
+		assert.strictEqual(await transport.request('ping'), 'ok');
+		await transport.shutdown();
+	});
+
+	test('a failed history write is logged and never fails the turn or shutdown', async () => {
+		class FailingDatabase extends TestSessionDatabase {
+			override async setMetadata(): Promise<void> { throw new Error('disk full'); }
+		}
+		const failing = new FailingDatabase();
+		const errors: unknown[] = [];
+		const log = new class extends NullLogService { override error(message: string | Error): void { errors.push(message); } }();
+		const provider = store.add(new NativeCliAgent('dsh', config, createSessionDataService(failing), log, { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined })));
+		try {
+			const chat = await create(provider, 'failing-write');
+			const published: string[] = [];
+			store.add(provider.onDidChangeChatData(event => published.push(event.chat.toString())));
+			await send(provider, chat, 'first', 'first');
+			assert.deepStrictEqual((await provider.chats.getMessages(chat, context(chat))).map(turn => turn.state), [TurnState.Complete]);
+			assert.ok(published.includes(chat.toString()), 'the finished turn is still published');
+			await provider.shutdown();
+			assert.ok(errors.length > 0, 'the failure is logged');
+		} finally {
+			failing.dispose();
+		}
+	});
+
+	test('zcode: a persisted chat whose native session was never used starts over instead of failing forever', async () => {
+		const sessions = await fs.mkdtemp(join(tmpdir(), 'native-cli-sessions-'));
+		process.env.NATIVE_FIXTURE_STORE = sessions;
+		try {
+			const provider = agent('zcode');
+			const chat = URI.parse('ahp-chat:/zcode-never-used');
+			await provider.materializeChat(chat, context(chat), JSON.stringify({ version: 1, provider: 'zcode', nativeId: 'sess_never_used', cwd: tmpdir(), model: { id: 'fixture/one' }, persisted: true, createdAt: 1, modifiedAt: 1 }));
+			await send(provider, chat, 'first', 'first');
+			const turns = await provider.chats.getMessages(chat, context(chat));
+			assert.deepStrictEqual(turns.map(turn => turn.state), [TurnState.Complete]);
+			assert.match(response(turns[0]), /resumed=false/);
+			await send(provider, chat, 'second', 'second');
+			assert.match(response((await provider.chats.getMessages(chat, context(chat)))[1]), /resumed=false/, 'the new session now exists and is resumed on the next process');
+			await provider.shutdown();
+		} finally {
+			delete process.env.NATIVE_FIXTURE_STORE;
+			await fs.rm(sessions, { recursive: true, force: true });
+		}
+	});
+
+	test('zcode: a chat with completed turns reports a lost native session instead of silently starting over', async () => {
+		const sessions = await fs.mkdtemp(join(tmpdir(), 'native-cli-sessions-'));
+		process.env.NATIVE_FIXTURE_STORE = sessions;
+		try {
+			const provider = agent('zcode');
+			const chat = URI.parse('ahp-chat:/zcode-lost-session');
+			const done = { id: 'earlier', startedAt: new Date().toISOString(), message: { text: 'earlier', origin: { kind: MessageKind.User } }, responseParts: [], usage: undefined, state: TurnState.Complete };
+			await database.setMetadata(`zcode.history.${chat.toString()}`, JSON.stringify([done]));
+			await provider.materializeChat(chat, context(chat), JSON.stringify({ version: 1, provider: 'zcode', nativeId: 'sess_lost', cwd: tmpdir(), model: { id: 'fixture/one' }, persisted: true, createdAt: 1, modifiedAt: 1 }));
+			await assert.rejects(send(provider, chat, 'again', 'again'), /Session not found/);
+			await provider.shutdown();
+		} finally {
+			delete process.env.NATIVE_FIXTURE_STORE;
+			await fs.rm(sessions, { recursive: true, force: true });
+		}
+	});
+
+	test('native CLIs inherit the user\'s environment without VS Code and Electron plumbing', async () => {
+		const inherited = { PATH: '/usr/bin', HOME: '/home/user', DSH_TOKEN: 'keep', NODE_OPTIONS: '--require ./inspector.js', VSCODE_PID: '1', VSCODE_IPC_HOOK: '/tmp/hook', ELECTRON_RUN_AS_NODE: '1', ELECTRON_ENABLE_LOGGING: '1' };
+		const none: INativeCliAgentConfig = { enabled: true, executable: '', args: [], home: '', models: [] };
+		assert.deepStrictEqual((await nativeCliLaunch('dsh', none, tmpdir(), inherited)).env, { PATH: '/usr/bin', HOME: '/home/user', DSH_TOKEN: 'keep' });
+		// Running this process's own binary as Node is deliberate and stays.
+		assert.strictEqual((await nativeCliLaunch('dsh', { ...none, executable: process.execPath }, tmpdir(), inherited)).env.ELECTRON_RUN_AS_NODE, '1');
+	});
+
+	test('zcode on PATH leads to the installed application\'s bundled CLI, and only then', async function () {
+		if (process.platform !== 'linux') { return this.skip(); }
+		const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'native-cli-zcode-install-')));
+		try {
+			const application = join(root, 'opt/ZCode');
+			await fs.mkdir(join(application, 'resources/glm'), { recursive: true });
+			await fs.mkdir(join(application, 'resources/config/provider'), { recursive: true });
+			await fs.mkdir(join(root, 'usr/bin'), { recursive: true });
+			await fs.writeFile(join(application, 'zcode'), '#!/bin/sh\n', { mode: 0o755 });
+			await fs.writeFile(join(application, 'resources/glm/zcode.cjs'), '');
+			await fs.writeFile(join(application, 'resources/config/provider/zcode-builtin.json'), '{}');
+			await fs.symlink(join(application, 'zcode'), join(root, 'usr/bin/zcode'));
+			const none: INativeCliAgentConfig = { enabled: true, executable: '', args: [], home: root, models: [] };
+			const path = { PATH: join(root, 'usr/bin') };
+
+			const launch = await nativeCliLaunch('zcode', none, root, path);
+			assert.deepStrictEqual({ executable: launch.executable, args: launch.args, asNode: launch.env.ELECTRON_RUN_AS_NODE, builtin: launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE, personal: launch.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE, installed: launch.installedProviderConfig }, {
+				executable: join(application, 'zcode'),
+				args: [join(application, 'resources/glm/zcode.cjs'), 'app-server', '--stdio'],
+				asNode: '1',
+				builtin: join(application, 'resources/config/provider/zcode-builtin.json'),
+				personal: join(root, '.zcode/v2/provider_config.json'),
+				installed: join(application, 'resources/config/provider/zcode-builtin.json'),
+			});
+
+			// An explicit executable is never replaced, and a launcher that is not an application is left alone.
+			assert.strictEqual((await nativeCliLaunch('zcode', { ...none, executable: '/custom/zcode' }, root, path)).executable, '/custom/zcode');
+			await fs.rm(join(application, 'resources/glm/zcode.cjs'));
+			const plain = await nativeCliLaunch('zcode', none, root, path);
+			assert.deepStrictEqual({ executable: plain.executable, args: plain.args, asNode: plain.env.ELECTRON_RUN_AS_NODE }, { executable: 'zcode', args: ['app-server', '--stdio'], asNode: undefined });
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 
 	test('rejects malformed process arguments before spawning', () => {

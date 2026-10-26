@@ -5,7 +5,7 @@
 
 import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
-import { homedir, tmpdir } from 'os';
+import { tmpdir } from 'os';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { basename, dirname, isAbsolute, join } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -19,7 +19,7 @@ import { CustomizationEnablementKind, McpServerStatus } from '../../common/state
 import { CustomizationLoadStatus, CustomizationType, customizationId, type AgentCustomization, type Customization, type DirectoryCustomization, type HookCustomization, type McpServerCustomization, type RuleCustomization, type SkillCustomization } from '../../common/state/sessionState.js';
 import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } from './nativeCliTransport.js';
 import { dshRuntimeObserver, observeNativeCliRuntime } from './nativeCliRuntime.js';
-import { zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
+import { isolatedZcodeEnvironment, zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
 
 /** Maps native metadata only. No foreign harness directories or file contents are scanned. */
 export function nativeCliCustomizations(id: NativeCliAgentId, snapshot: NativeRecord): readonly Customization[] {
@@ -79,7 +79,7 @@ export function nativeCliCustomizations(id: NativeCliAgentId, snapshot: NativeRe
 			tools.push({ name: tool.name, description: typeof tool.description === 'string' ? tool.description : undefined, loading: tool.loading === 'deferred' || tool.loading === 'binding' || tool.loading === 'unavailable' ? tool.loading : 'eager', source: tool.source === 'mcp' || tool.source === 'vscode' ? tool.source : 'builtin', sourceName: typeof tool.sourceName === 'string' ? tool.sourceName : undefined });
 		}
 		const uri = URI.from({ scheme: AGENT_BUILTIN_CUSTOMIZATION_SCHEME, authority: id, path: '/runtime-tools' }).toString();
-		directories.set('runtime-tools', { type: CustomizationType.Directory, id: customizationId(uri), uri, name: 'runtime-tools', enabled: true, writable: false, contents: CustomizationType.Skill, children: [], load: { kind: CustomizationLoadStatus.Loaded }, _meta: withRuntimeToolInventory(undefined, { provider: id, label: id === 'dsh' ? 'DeepSeek Harness' : 'ZCode', scope: snapshot.scope === 'chat' ? 'chat' : 'workspace', state: snapshot.toolsState === 'unavailable' ? 'unavailable' : 'ready', tools }) });
+		directories.set('runtime-tools', { type: CustomizationType.Directory, id: customizationId(uri), uri, name: 'runtime-tools', enabled: true, writable: false, contents: CustomizationType.Skill, children: [], load: { kind: CustomizationLoadStatus.Loaded }, _meta: withRuntimeToolInventory(undefined, { provider: id, label: id === 'dsh' ? localize('nativeCli.dshLabel', "DeepSeek Harness") : localize('nativeCli.zcodeLabel', "ZCode"), scope: snapshot.scope === 'chat' ? 'chat' : 'workspace', state: snapshot.toolsState === 'unavailable' ? 'unavailable' : 'ready', tools }) });
 	}
 	if (Array.isArray(snapshot.plugins)) {
 		const plugins: IRuntimePlugin[] = [];
@@ -114,7 +114,7 @@ async function readDshCustomizations(launch: INativeCliLaunch, signal: AbortSign
 		await fs.writeFile(plugin, dshRuntimeObserver, { mode: 0o600 });
 		await fs.writeFile(patch, `- insert:\n    - id: vscode-customization-inventory\n      name: ${JSON.stringify(plugin)}\n`, { mode: 0o600 });
 		await new Promise<void>((resolve, reject) => {
-			const child = execFile(launch.executable, [...launch.args, '--patch', patch], { cwd: launch.cwd, env: { ...launch.env, VSCODE_NATIVE_INVENTORY_CWD: launch.cwd, VSCODE_NATIVE_INVENTORY_RESULT: result }, signal, windowsHide: true, timeout: 15_000, maxBuffer: 4 * 1024 * 1024 }, error => error ? reject(new Error(localize('nativeCli.customizationsUnavailable', "Could not read native customizations."))) : resolve());
+			const child = execFile(launch.executable, [...launch.args, '--patch', patch], { cwd: launch.cwd, env: { ...launch.env, VSCODE_NATIVE_INVENTORY_CWD: launch.cwd, VSCODE_NATIVE_INVENTORY_RESULT: result }, signal, windowsHide: true, timeout: 15_000, maxBuffer: 4 * 1024 * 1024 }, error => error ? reject(Object.assign(new Error(localize('nativeCli.customizationsUnavailable', "Could not read native customizations.")), { code: error.code, signal: error.signal, killed: error.killed })) : resolve());
 			// Drain diagnostics without logging config, credentials or native parser errors.
 			let marker = '';
 			child.stderr?.on('data', (chunk: Buffer) => {
@@ -135,15 +135,10 @@ async function readDshCustomizations(launch: INativeCliLaunch, signal: AbortSign
 async function readZcodeCustomizations(launch: INativeCliLaunch, signal: AbortSignal, modelSelection?: NativeRecord): Promise<NativeRecord> {
 	if (signal.aborted) { throw new CancellationError(); }
 	const temporary = await fs.mkdtemp(join(tmpdir(), 'vscode-zcode-inventory-'));
-	const env: NodeJS.ProcessEnv = { ...launch.env, ZCODE_DATA_BASE_DIR: temporary };
 	let connection: NativeCliTransport | undefined;
 	let observer: Awaited<ReturnType<typeof observeNativeCliRuntime>> | undefined;
 	try {
-		const personal = launch.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE ?? join(launch.env.ZCODE_DATA_BASE_DIR || homedir(), '.zcode/v2/provider_config.json');
-		for (const [key, source] of [['ZCODE_PERSONAL_PROVIDER_CONFIG_FILE', personal], ['ZCODE_BUILTIN_PROVIDER_CONFIG_FILE', launch.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE]] as const) {
-			if (!source) { continue; }
-			try { const target = join(temporary, `${key}.json`); await fs.copyFile(source, target); await fs.chmod(target, 0o600); env[key] = target; } catch { delete env[key]; }
-		}
+		const env = await isolatedZcodeEnvironment(launch, temporary);
 		observer = await observeNativeCliRuntime('zcode', { ...launch, env });
 		connection = new NativeCliTransport(observer.launch);
 		const transport = connection;

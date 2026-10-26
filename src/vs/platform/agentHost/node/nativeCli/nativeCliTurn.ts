@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import type { AgentSignal, IAgentActionSignal } from '../../common/agent.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import { MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, ToolResultContentType, TurnState, createErrorResponsePart, type MarkdownResponsePart, type ReasoningResponsePart, type ModelSelection, type ToolCallResponsePart, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
@@ -54,7 +55,8 @@ export class NativeCliTurn {
 		this.action({ type: reasoning ? ActionType.ChatReasoning : ActionType.ChatDelta, turnId: this.turn.id, partId: part.id, content: delta });
 	}
 
-	tool(id: string, name: string, input?: unknown, confirmation = false): void {
+	/** With `confirmation`, the call waits for a decision. An absent `input` keeps what the tool call already showed. */
+	tool(id: string, name: string, input?: unknown, confirmation = false, confirmationTitle?: string): void {
 		if (this.ended) { return; }
 		const toolCallId = this.toolId(id);
 		if (!this.tools.has(id)) {
@@ -63,7 +65,7 @@ export class NativeCliTurn {
 			this.turn.responseParts.push(part);
 			this.action({ type: ActionType.ChatToolCallStart, turnId: this.turn.id, toolCallId, toolName: name, displayName: name });
 		}
-		this.action({ type: ActionType.ChatToolCallReady, turnId: this.turn.id, toolCallId, invocationMessage: name, toolInput: input === undefined ? undefined : JSON.stringify(input), ...(confirmation ? {} : { confirmed: ToolCallConfirmationReason.NotNeeded }) });
+		this.action({ type: ActionType.ChatToolCallReady, turnId: this.turn.id, toolCallId, invocationMessage: name, toolInput: input === undefined ? undefined : JSON.stringify(input), ...(confirmation ? (confirmationTitle ? { confirmationTitle } : {}) : { confirmed: ToolCallConfirmationReason.NotNeeded }) });
 	}
 
 	toolResult(id: string, output: unknown, success: boolean): void {
@@ -133,9 +135,10 @@ export class NativeCliTurn {
 			if (data.kind === 'error') { this.toolResult(id, record(data.error).message ?? data.error, false); }
 		} else if (event.type === 'turn.completed') {
 			if (!this.hasText && typeof data.response === 'string') { this.text('final', data.response); }
-			return { finished: true, cancelled: data.resultType === 'cancelled', error: data.resultType !== 'success' && data.resultType !== 'cancelled' ? String(data.resultType) : undefined };
+			const failed = data.resultType !== 'success' && data.resultType !== 'cancelled';
+			return { finished: true, cancelled: data.resultType === 'cancelled', error: failed ? (typeof data.resultType === 'string' && data.resultType ? data.resultType : localize('nativeCli.zcodeFailed', "ZCode turn failed.")) : undefined };
 		} else if (event.type === 'turn.failed') {
-			return { finished: true, error: String(record(data.error).message ?? 'ZCode turn failed.') };
+			return { finished: true, error: String(record(data.error).message ?? localize('nativeCli.zcodeFailed', "ZCode turn failed.")) };
 		}
 		return {};
 	}
@@ -143,7 +146,7 @@ export class NativeCliTurn {
 	finish(state: TurnState, error?: string): void {
 		if (this.ended) { return; }
 		for (const [id, part] of this.tools) {
-			if (part.toolCall.status !== ToolCallStatus.Completed) { this.toolResult(id, error ?? (state === TurnState.Cancelled ? 'Cancelled' : ''), false); }
+			if (part.toolCall.status !== ToolCallStatus.Completed) { this.toolResult(id, error ?? (state === TurnState.Cancelled ? localize('nativeCli.toolCancelled', "Cancelled") : ''), false); }
 		}
 		this.ended = true;
 		this.turn.state = state;
