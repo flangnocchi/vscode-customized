@@ -80,6 +80,11 @@ interface IChat {
 	generation: number;
 }
 
+/** Whether the chat finished a turn, so that its native session holds something worth keeping. */
+function hasCompletedTurn(entry: IChat): boolean {
+	return entry.history.some(turn => turn.state === TurnState.Complete);
+}
+
 /**
  * Validates the starter's JSON, rather than trusting environment-provided process arguments. A mistake in one
  * provider's settings throws, unless `onInvalid` is given: then it is reported there and the other provider stays usable.
@@ -455,7 +460,13 @@ export class NativeCliAgent extends Disposable implements IAgent {
 					const [provider, ...model] = entry.backing.model.id.split('/');
 					if (!provider || !model.length) { throw new Error(localize('nativeCli.dshModelId', "DSH model IDs must use provider/model format.")); }
 					await connection.request('initialize', { cwd: entry.backing.cwd, provider, model: model.join('/'), ...(typeof entry.backing.model.config?.reasoningEffort === 'string' ? { reasoningEffort: entry.backing.model.config.reasoningEffort } : {}), approvalRequests: true, capabilities: { userQuestions: true } });
-					await connection.request(entry.backing.persisted ? 'session/resume' : 'session/working-directory/get', { sessionId: entry.backing.nativeId });
+					try {
+						await connection.request(entry.backing.persisted ? 'session/resume' : 'session/working-directory/get', { sessionId: entry.backing.nativeId });
+					} catch (error) {
+						// A session that never completed a turn may not have been saved. Starting it again loses nothing.
+						if (!entry.backing.persisted || hasCompletedTurn(entry)) { throw error; }
+						await connection.request('session/working-directory/get', { sessionId: entry.backing.nativeId });
+					}
 				} else {
 					await connection.request('runtime/capabilities', {});
 					// Discover the native model defaults before selecting a route: ZCode
@@ -466,7 +477,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 						snapshot = record(await connection.request(entry.backing.persisted ? 'session/resume' : 'session/create', { ...session, ...(entry.backing.persisted ? {} : { mode: 'build' }) }));
 					} catch (error) {
 						// ZCode only keeps a session that has been used. Starting over loses nothing when no turn ever completed.
-						if (!entry.backing.persisted || entry.history.some(turn => turn.state === TurnState.Complete)) { throw error; }
+						if (!entry.backing.persisted || hasCompletedTurn(entry)) { throw error; }
 						snapshot = record(await connection.request('session/create', { ...session, mode: 'build' }));
 					}
 					this.updateZcodeModels(snapshot);

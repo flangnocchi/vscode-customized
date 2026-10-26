@@ -347,42 +347,44 @@ suite('Native CLI agents', () => {
 		}
 	});
 
-	test('zcode: a persisted chat whose native session was never used starts over instead of failing forever', async () => {
-		const sessions = await fs.mkdtemp(join(tmpdir(), 'native-cli-sessions-'));
-		process.env.NATIVE_FIXTURE_STORE = sessions;
-		try {
-			const provider = agent('zcode');
-			const chat = URI.parse('ahp-chat:/zcode-never-used');
-			await provider.materializeChat(chat, context(chat), JSON.stringify({ version: 1, provider: 'zcode', nativeId: 'sess_never_used', cwd: tmpdir(), model: { id: 'fixture/one' }, persisted: true, createdAt: 1, modifiedAt: 1 }));
-			await send(provider, chat, 'first', 'first');
-			const turns = await provider.chats.getMessages(chat, context(chat));
-			assert.deepStrictEqual(turns.map(turn => turn.state), [TurnState.Complete]);
-			assert.match(response(turns[0]), /resumed=false/);
-			await send(provider, chat, 'second', 'second');
-			assert.match(response((await provider.chats.getMessages(chat, context(chat)))[1]), /resumed=false/, 'the new session now exists and is resumed on the next process');
-			await provider.shutdown();
-		} finally {
-			delete process.env.NATIVE_FIXTURE_STORE;
-			await fs.rm(sessions, { recursive: true, force: true });
-		}
-	});
+	for (const dialect of ['dsh', 'zcode'] as const) {
+		test(`${dialect}: a persisted chat whose native session was never used starts over instead of failing forever`, async () => {
+			const sessions = await fs.mkdtemp(join(tmpdir(), 'native-cli-sessions-'));
+			process.env.NATIVE_FIXTURE_STORE = sessions;
+			try {
+				const provider = agent(dialect);
+				const chat = URI.parse(`ahp-chat:/${dialect}-never-used`);
+				await provider.materializeChat(chat, context(chat), JSON.stringify({ version: 1, provider: dialect, nativeId: 'sess_never_used', cwd: tmpdir(), model: { id: 'fixture/one' }, persisted: true, createdAt: 1, modifiedAt: 1 }));
+				await send(provider, chat, 'first', 'first');
+				const turns = await provider.chats.getMessages(chat, context(chat));
+				assert.deepStrictEqual(turns.map(turn => turn.state), [TurnState.Complete]);
+				assert.match(response(turns[0]), /resumed=false/);
+				await send(provider, chat, 'second', 'second');
+				assert.match(response((await provider.chats.getMessages(chat, context(chat)))[1]), /resumed=false/, 'the new session now exists and is resumed on the next process');
+				await provider.shutdown();
+			} finally {
+				delete process.env.NATIVE_FIXTURE_STORE;
+				await fs.rm(sessions, { recursive: true, force: true });
+			}
+		});
 
-	test('zcode: a chat with completed turns reports a lost native session instead of silently starting over', async () => {
-		const sessions = await fs.mkdtemp(join(tmpdir(), 'native-cli-sessions-'));
-		process.env.NATIVE_FIXTURE_STORE = sessions;
-		try {
-			const provider = agent('zcode');
-			const chat = URI.parse('ahp-chat:/zcode-lost-session');
-			const done = { id: 'earlier', startedAt: new Date().toISOString(), message: { text: 'earlier', origin: { kind: MessageKind.User } }, responseParts: [], usage: undefined, state: TurnState.Complete };
-			await database.setMetadata(`zcode.history.${chat.toString()}`, JSON.stringify([done]));
-			await provider.materializeChat(chat, context(chat), JSON.stringify({ version: 1, provider: 'zcode', nativeId: 'sess_lost', cwd: tmpdir(), model: { id: 'fixture/one' }, persisted: true, createdAt: 1, modifiedAt: 1 }));
-			await assert.rejects(send(provider, chat, 'again', 'again'), /Session not found/);
-			await provider.shutdown();
-		} finally {
-			delete process.env.NATIVE_FIXTURE_STORE;
-			await fs.rm(sessions, { recursive: true, force: true });
-		}
-	});
+		test(`${dialect}: a chat with completed turns reports a lost native session instead of silently starting over`, async () => {
+			const sessions = await fs.mkdtemp(join(tmpdir(), 'native-cli-sessions-'));
+			process.env.NATIVE_FIXTURE_STORE = sessions;
+			try {
+				const provider = agent(dialect);
+				const chat = URI.parse(`ahp-chat:/${dialect}-lost-session`);
+				const done = { id: 'earlier', startedAt: new Date().toISOString(), message: { text: 'earlier', origin: { kind: MessageKind.User } }, responseParts: [], usage: undefined, state: TurnState.Complete };
+				await database.setMetadata(`${dialect}.history.${chat.toString()}`, JSON.stringify([done]));
+				await provider.materializeChat(chat, context(chat), JSON.stringify({ version: 1, provider: dialect, nativeId: 'sess_lost', cwd: tmpdir(), model: { id: 'fixture/one' }, persisted: true, createdAt: 1, modifiedAt: 1 }));
+				await assert.rejects(send(provider, chat, 'again', 'again'), /Session not found/);
+				await provider.shutdown();
+			} finally {
+				delete process.env.NATIVE_FIXTURE_STORE;
+				await fs.rm(sessions, { recursive: true, force: true });
+			}
+		});
+	}
 
 	test('native CLIs inherit the user\'s environment without VS Code and Electron plumbing', async () => {
 		const inherited = { PATH: '/usr/bin', HOME: '/home/user', DSH_TOKEN: 'keep', NODE_OPTIONS: '--require ./inspector.js', VSCODE_PID: '1', VSCODE_IPC_HOOK: '/tmp/hook', ELECTRON_RUN_AS_NODE: '1', ELECTRON_ENABLE_LOGGING: '1' };

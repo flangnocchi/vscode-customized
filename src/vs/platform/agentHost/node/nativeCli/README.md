@@ -53,7 +53,7 @@ Opaque provider data stores the native conversation ID, model and workspace. A p
 
 Quick chats without an open workspace use Agent Host's stable scratch folder under `<userHome>/.copilot/chats/<sessionId>`, like the existing Claude provider. Missing scratch folders are recreated on resume, and scratch folders are not published as workspace projects.
 
-ZCode keeps a native session only once it has been used. A chat that never completed a turn therefore starts a new native session when the old one is gone; a chat with completed turns reports the loss instead of silently starting over. A message sent right after Stop waits until the old process has exited, rather than being refused or cancelled by that exit.
+A native session may not be saved until it has been used. If the runtime no longer knows the session of a chat that never completed a turn, ZCode and DSH alike start a new native session for it; a chat with completed turns reports the loss instead of silently starting over. A message sent right after Stop waits until the old process has exited, rather than being refused or cancelled by that exit.
 
 Cancellation closes stdin so the runtime can cancel work and flush its native store. Shutdown waits for process exit before escalation or another launch. Startup cancellation is generation-checked so an abandoned launch cannot admit a late prompt. Unexpected process exit rejects pending requests and releases the dead connection for a subsequent resume.
 
