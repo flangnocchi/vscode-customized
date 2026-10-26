@@ -177,8 +177,8 @@ export class ModelPicker extends Disposable {
 	 * when the session has models, when its Auto model is unavailable (so the
 	 * widget can render the "No models available" empty state), or when the
 	 * workspace is untrusted / Chat still needs sign-in (so the widget can render
-	 * its Restricted Mode or Sign In state). Otherwise hidden, matching the
-	 * historical behavior for providers that offer no models.
+	 * its Restricted Mode or Sign In state). Keep the management entry point
+	 * available when every model is hidden by the user's visibility preferences.
 	 */
 	private _shouldShowPicker(): boolean {
 		const state = this._selectionModel.state.get();
@@ -188,7 +188,7 @@ export class ModelPicker extends Disposable {
 		if (this._modelPicker.isRestrictedMode() || this._modelPicker.isSetupRequired()) {
 			return true;
 		}
-		return !state.options.showAutoModel;
+		return !state.options.showAutoModel || state.options.showManageModelsAction;
 	}
 
 	private _updatePickerState(): void {

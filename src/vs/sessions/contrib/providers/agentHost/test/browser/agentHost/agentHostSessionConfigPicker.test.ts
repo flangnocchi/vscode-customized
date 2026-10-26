@@ -422,6 +422,55 @@ suite('Agent Host Session Config Picker', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
+	for (const providerId of ['dsh', 'zcode']) {
+		for (const isNew of [true, false]) {
+			test(`exposes ${providerId} permissions beside the input in a workspace-less ${isNew ? 'draft' : 'running'} chat`, async () => {
+				const services = setupServices(store);
+				const property = `${providerId}.permissionMode`;
+				services.provider.isNew = isNew;
+				services.workspaceObs.set(undefined, undefined);
+				services.provider.config = {
+					schema: { type: 'object', properties: {
+						[property]: { type: 'string', title: 'Permissions', enum: ['read', 'write'], enumLabels: ['Read Only', 'Workspace Access'], default: 'write', sessionMutable: true, chatMutable: true },
+					} },
+					values: { [property]: 'write' },
+				};
+				const factories = new Map<MenuId, IActionViewItemFactory>();
+				services.instantiationService.stub(IActionViewItemService, new class extends mock<IActionViewItemService>() {
+					override readonly onDidChange = Event.None;
+					override register(menu: MenuId, commandId: string | MenuId, factory: IActionViewItemFactory) {
+						if (String(commandId).endsWith(property)) { factories.set(menu, factory); }
+						return toDisposable(() => { });
+					}
+				}());
+				services.instantiationService.stub(IWorkbenchLayoutService, new class extends mock<IWorkbenchLayoutService>() {
+					override readonly mainContainer = document.createElement('div');
+				}());
+				services.instantiationService.stub(ISessionsService, new class extends mock<ISessionsService>() {
+					override readonly visibleSessions = constObservable([services.activeSession]);
+				}());
+				services.instantiationService.stub(ISessionContext, new class extends mock<ISessionContext>() {
+					override readonly session = constObservable(services.activeSession);
+				}());
+				store.add(services.instantiationService.createInstance(AgentHostSessionConfigPickerContribution));
+				const menus = [Menus.NewSessionControl, MenuId.ChatInput, MenuId.ChatInputSecondary, Menus.NewSessionRepositoryConfig];
+				const menuItems = menus.map(menu => MenuRegistry.getMenuItems(menu).filter(isIMenuItem).filter(item => item.command.id.endsWith(property)));
+				const action = toAction({ id: menuItems[0][0].command.id, label: 'Permissions', run: () => { } });
+				const item = store.add(factories.get(Menus.NewSessionControl)!(action, {}, services.instantiationService, mainWindow.vscodeWindowId)!);
+				const container = document.createElement('div');
+				item.render(container);
+				container.querySelector<HTMLElement>('[role="button"]')!.click();
+				await timeout(0);
+				await services.actionWidget.delegate!.onSelect(services.actionWidget.items.find(item => item.item?.value === 'read')!.item!);
+				await timeout(0);
+				assert.deepStrictEqual({ menuCounts: menuItems.map(items => items.length), writes: services.provider.setSessionConfigValueArguments }, {
+					menuCounts: [1, 1, 1, 0],
+					writes: [{ sessionId: SESSION_ID, property, value: 'read' }],
+				});
+			});
+		}
+	}
+
 	test('Copilot repository controls preserve target, baseBranch and new branch keys', async () => {
 		const services = setupServices(store);
 		services.provider.completions = [{ value: 'main', label: 'main' }, { value: 'dev', label: 'dev' }];

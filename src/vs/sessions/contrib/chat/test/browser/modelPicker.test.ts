@@ -193,16 +193,18 @@ suite('ModelPicker automation toolbar', () => {
 suite('ModelPicker controls', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('exposes the rendered picker and its existing operations without a session', () => {
+	test('keeps model management accessible with no visible models and exposes its picker operations', () => {
 		const instantiationService = disposables.add(new TestInstantiationService());
 		instantiationService.stub(IChatSessionsService, new MockChatSessionsService());
 		const modelPickers = new NewChatModelPickerService();
 		const selectedModels: string[] = [];
 		let opens = 0;
 		let disposed = 0;
+		let enabled = false;
+		const state = observableValue('modelSelection', EMPTY_MODEL_SELECTION_STATE);
 		instantiationService.stub(ISessionContext, new SessionContext(constObservable(undefined)));
 		instantiationService.stub(ISessionModelSelection, {
-			state: constObservable(EMPTY_MODEL_SELECTION_STATE),
+			state,
 			selectModel: id => { selectedModels.push(id); return true; },
 		});
 		instantiationService.stub(ITelemetryService, {});
@@ -220,7 +222,7 @@ suite('ModelPicker controls', () => {
 		instantiationService.stubInstance(ModelPickerActionItem, {
 			render: () => { },
 			openModelPicker: () => opens++,
-			setEnabled: () => { },
+			setEnabled: value => { enabled = value; },
 			isRestrictedMode: () => false,
 			isSetupRequired: () => false,
 			dispose: () => disposed++,
@@ -232,6 +234,9 @@ suite('ModelPicker controls', () => {
 		const first = document.createElement('div');
 		const second = document.createElement('div');
 		picker.render(first);
+		const initiallyHidden = first.style.display === 'none';
+		state.set({ ...EMPTY_MODEL_SELECTION_STATE, options: { ...EMPTY_MODEL_SELECTION_STATE.options, showManageModelsAction: true } }, undefined);
+		const managementVisible = first.style.display !== 'none' && enabled;
 		const firstMatches = control.getDomNode() === first;
 		picker.render(second);
 		control.open();
@@ -240,10 +245,10 @@ suite('ModelPicker controls', () => {
 		picker.dispose();
 
 		assert.deepStrictEqual({
-			beforeRender, firstMatches, secondMatches, opens, switched, selectedModels, disposed,
+			beforeRender, initiallyHidden, managementVisible, firstMatches, secondMatches, opens, switched, selectedModels, disposed,
 			activePicker: modelPickers.activePicker,
 		}, {
-			beforeRender: undefined, firstMatches: true, secondMatches: true, opens: 1, switched: true,
+			beforeRender: undefined, initiallyHidden: true, managementVisible: true, firstMatches: true, secondMatches: true, opens: 1, switched: true,
 			selectedModels: ['vendor/model'], disposed: 1, activePicker: undefined,
 		});
 	});
