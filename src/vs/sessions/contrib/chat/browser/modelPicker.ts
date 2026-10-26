@@ -19,6 +19,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ChatContextKeys } from '../../../../workbench/contrib/chat/common/actions/chatContextKeys.js';
 import { IChatInputPickerOptions } from '../../../../workbench/contrib/chat/browser/widget/input/chatInputPickerActionItem.js';
 import { IModelPickerDelegate, ModelPickerActionItem } from '../../../../workbench/contrib/chat/browser/widget/input/modelPicker/modelPickerActionItem.js';
+import { shouldShowManageModelsAction } from '../../../../workbench/contrib/chat/browser/widget/input/modelPicker/modelPickerItems.js';
 import { ChatPetAchievementIds, didExplicitlySwitchChatPetModel } from '../../../../workbench/contrib/chat/browser/chatPetAchievements.js';
 import { IChatPetService } from '../../../../workbench/contrib/chat/browser/chatPetService.js';
 import { IChatEntitlementService } from '../../../../workbench/services/chat/common/chatEntitlementService.js';
@@ -177,8 +178,10 @@ export class ModelPicker extends Disposable {
 	 * when the session has models, when its Auto model is unavailable (so the
 	 * widget can render the "No models available" empty state), or when the
 	 * workspace is untrusted / Chat still needs sign-in (so the widget can render
-	 * its Restricted Mode or Sign In state). Keep the management entry point
-	 * available when every model is hidden by the user's visibility preferences.
+	 * its Restricted Mode or Sign In state). Also visible when the picker can
+	 * offer model management, so that models the user has hidden can be shown
+	 * again. Otherwise hidden, matching the historical behavior for providers
+	 * that offer no models.
 	 */
 	private _shouldShowPicker(): boolean {
 		const state = this._selectionModel.state.get();
@@ -188,7 +191,7 @@ export class ModelPicker extends Disposable {
 		if (this._modelPicker.isRestrictedMode() || this._modelPicker.isSetupRequired()) {
 			return true;
 		}
-		return !state.options.showAutoModel || state.options.showManageModelsAction;
+		return !state.options.showAutoModel || (state.options.showManageModelsAction && shouldShowManageModelsAction(this._chatEntitlementService));
 	}
 
 	private _updatePickerState(): void {

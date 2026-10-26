@@ -25,7 +25,7 @@ import { ChatContextKeys } from '../../../../../workbench/contrib/chat/common/ac
 import { IChatSessionsService } from '../../../../../workbench/contrib/chat/common/chatSessionsService.js';
 import { MockChatSessionsService } from '../../../../../workbench/contrib/chat/test/common/mockChatSessionsService.js';
 import { ILanguageModelChatMetadataAndIdentifier } from '../../../../../workbench/contrib/chat/common/languageModels.js';
-import { IChatEntitlementService } from '../../../../../workbench/services/chat/common/chatEntitlementService.js';
+import { ChatEntitlement, IChatEntitlementService } from '../../../../../workbench/services/chat/common/chatEntitlementService.js';
 import { IsSessionsWindowContext } from '../../../../../workbench/common/contextkeys.js';
 import { ModelComparisonAvailableContext, ModelComparisonPickerFocusedContext } from '../../../../../workbench/contrib/chat/browser/widget/input/modelPicker/modelPickerComparison.js';
 import { COMPARE_SESSION_MODELS_COMMAND_ID } from '../../../../common/sessionCommands.js';
@@ -215,6 +215,7 @@ suite('ModelPicker controls', () => {
 			workspaceTrustInitialized: Promise.resolve(),
 		});
 		instantiationService.stub(IChatEntitlementService, {
+			entitlement: ChatEntitlement.Pro,
 			onDidChangeEntitlement: Event.None,
 			onDidChangeSentiment: Event.None,
 			onDidChangeAnonymous: Event.None,
