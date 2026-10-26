@@ -496,10 +496,15 @@ export class NativeCliAgent extends Disposable implements IAgent {
 
 	private updateZcodeModels(snapshot: NativeRecord): void {
 		const discovered = zcodeModelCatalog(snapshot).models;
-		if (discovered.length) {
-			const configured = new Map(this.config.models.map(model => [model.id, model.name]));
-			this.catalog.set(discovered.filter(model => !configured.size || configured.has(model.id)).map(model => ({ ...model, name: configured.get(model.id) ?? model.name })), undefined);
+		if (!discovered.length) { return; }
+		if (!this.config.models.length) {
+			this.catalog.set(discovered, undefined);
+			return;
 		}
+		// An explicit model list keeps its own choices and names, even for a model the runtime does not list. The runtime
+		// only adds what it knows about each one, such as its thinking levels.
+		const known = new Map(discovered.map(model => [model.id, model]));
+		this.catalog.set(this.config.models.map(({ id, name }) => ({ supportsVision: false, ...known.get(id), id, name, provider: this.id })), undefined);
 	}
 
 	private async send(chat: URI, prompt: string, turnId: string, roots: readonly URI[] | undefined, context: IAgentChatContext): Promise<void> {

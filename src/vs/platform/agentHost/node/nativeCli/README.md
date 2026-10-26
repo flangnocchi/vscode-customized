@@ -45,7 +45,7 @@ To override discovery with an explicit model list, use model IDs in `provider/mo
 }
 ```
 
-Model IDs may themselves contain slashes; only the first slash separates the provider. API-key providers use the native provider configuration. Changing the selected model restarts that chat's process and resumes the native conversation with the new route.
+A listed model is always offered, whether or not the runtime knows it. For ZCode, the runtime only adds what it knows about a listed model, such as its thinking levels. Model IDs may themselves contain slashes; only the first slash separates the provider. API-key providers use the native provider configuration. Changing the selected model restarts that chat's process and resumes the native conversation with the new route.
 
 ## Persistence and cancellation
 

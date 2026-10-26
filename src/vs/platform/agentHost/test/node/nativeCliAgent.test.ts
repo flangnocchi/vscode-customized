@@ -141,6 +141,16 @@ suite('Native CLI agents', () => {
 		});
 	}
 
+	test('zcode: an explicit model list keeps its own choices once the runtime reports its catalog', async () => {
+		const models = [{ id: 'mine/other', name: 'Mine' }, { id: 'fixture/one', name: 'Renamed' }];
+		const provider = store.add(new NativeCliAgent('zcode', { ...config, models }, data, new NullLogService(), { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined })));
+		const chat = await create(provider, 'zcode-models');
+		await send(provider, chat, 'first', 'first');
+		// The runtime adds the thinking levels it knows for a listed model, and nothing is dropped or invented.
+		assert.deepStrictEqual(provider.models.get().map(model => [model.id, model.name, !!model.configSchema]), [['mine/other', 'Mine', false], ['fixture/one', 'Renamed', true]]);
+		await provider.shutdown();
+	});
+
 	test('stopping one chat leaves another process usable and the cancelled chat resumes', async () => {
 		const provider = agent('dsh');
 		const one = await create(provider, 'cancel-one');
