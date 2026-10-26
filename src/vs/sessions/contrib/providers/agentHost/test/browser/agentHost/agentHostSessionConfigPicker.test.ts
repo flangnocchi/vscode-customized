@@ -272,6 +272,7 @@ class CapturingActionWidgetHolder {
 function setupServices(
 	store: Pick<ReturnType<typeof ensureNoDisposablesAreLeakedInTestSuite>, 'add'>,
 	options?: {
+		withoutPickerVisibility?: boolean;
 		checkoutDialogChoice?: 'Stash & Checkout' | 'Commit & Checkout';
 		checkoutDialogShown?: DeferredPromise<void>;
 		checkoutDialogRelease?: DeferredPromise<void>;
@@ -309,7 +310,9 @@ function setupServices(
 	} as Partial<IActionWidgetService> as IActionWidgetService);
 	instantiationService.stub(IHoverService, NullHoverService);
 	instantiationService.stub(IKeybindingService, new MockKeybindingService());
-	instantiationService.stub(ISessionInputPickerVisibility, store.add(new SessionInputPickerVisibility()));
+	if (!options?.withoutPickerVisibility) {
+		instantiationService.stub(ISessionInputPickerVisibility, store.add(new SessionInputPickerVisibility()));
+	}
 	instantiationService.stub(ITelemetryService, NullTelemetryService);
 	const configurationService = new TestConfigurationService({
 		[DevContainerWorktreeEnabledSettingId]: false,
@@ -425,7 +428,7 @@ suite('Agent Host Session Config Picker', () => {
 	for (const providerId of ['dsh', 'zcode']) {
 		for (const isNew of [true, false]) {
 			test(`exposes ${providerId} permissions beside the input in a workspace-less ${isNew ? 'draft' : 'running'} chat`, async () => {
-				const services = setupServices(store);
+				const services = setupServices(store, { withoutPickerVisibility: true });
 				const property = `${providerId}.permissionMode`;
 				services.provider.isNew = isNew;
 				services.workspaceObs.set(undefined, undefined);

@@ -30,9 +30,10 @@ import { IConfigurationService } from '../../../../../platform/configuration/com
 import { ContextKeyExpr, IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { ServiceCollection } from '../../../../../platform/instantiation/common/serviceCollection.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
-import { ISessionInputPickerVisibility } from '../../../../services/sessions/common/sessionPickerVisibility.js';
+import { ISessionInputPickerVisibility, SessionInputPickerVisibility } from '../../../../services/sessions/common/sessionPickerVisibility.js';
 import { FOCUS_NEW_SESSION_BRANCH_PICKER_COMMAND_ID, FOCUS_NEW_SESSION_WORKTREE_PICKER_COMMAND_ID } from '../../../../common/sessionCommands.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { ITelemetryService } from '../../../../../platform/telemetry/common/telemetry.js';
@@ -1902,7 +1903,17 @@ export class AgentHostSessionConfigPickerContribution extends Disposable impleme
 		for (const menu of [Menus.NewSessionControl, MenuId.ChatInput, MenuId.ChatInputSecondary]) {
 			this._register(actionViewItemService.register(menu, ADDITIONAL_SESSION_CONFIG_PICKER_ID, (_action, _options, scopedInstantiationService) => {
 				const { session } = scopedInstantiationService.invokeFunction(accessor => accessor.get(ISessionContext));
-				return new PickerActionViewItem(scopedInstantiationService.createInstance(AgentHostAdditionalConfigPicker, session, undefined));
+				// Running widgets have no New Session repository-visibility scope.
+				// These non-repository controls own their otherwise unused registry.
+				const store = new DisposableStore();
+				const visibility = store.add(new SessionInputPickerVisibility());
+				const scope = store.add(scopedInstantiationService.createChild(new ServiceCollection([ISessionInputPickerVisibility, visibility])));
+				try {
+					return new PickerActionViewItem(scope.createInstance(AgentHostAdditionalConfigPicker, session, undefined), store);
+				} catch (error) {
+					store.dispose();
+					throw error;
+				}
 			}));
 		}
 		registerRunningSessionPicker(
