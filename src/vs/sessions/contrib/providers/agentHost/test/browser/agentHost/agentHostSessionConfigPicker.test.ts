@@ -9,6 +9,7 @@ import { DeferredPromise, timeout } from '../../../../../../../base/common/async
 import { CancellationToken } from '../../../../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../../../../base/common/event.js';
+import { AnchorPosition } from '../../../../../../../base/common/layout.js';
 import { toDisposable } from '../../../../../../../base/common/lifecycle.js';
 import { constObservable, IObservable, observableValue } from '../../../../../../../base/common/observable.js';
 import { URI } from '../../../../../../../base/common/uri.js';
@@ -466,8 +467,9 @@ suite('Agent Host Session Config Picker', () => {
 				await timeout(0);
 				await services.actionWidget.delegate!.onSelect(services.actionWidget.items.find(item => item.item?.value === 'read')!.item!);
 				await timeout(0);
-				assert.deepStrictEqual({ menuCounts: menuItems.map(items => items.length), writes: services.provider.setSessionConfigValueArguments }, {
+				assert.deepStrictEqual({ menuCounts: menuItems.map(items => items.length), anchorPosition: services.actionWidget.listOptions?.anchorPosition, writes: services.provider.setSessionConfigValueArguments }, {
 					menuCounts: [1, 1, 1, 0],
+					anchorPosition: isNew ? AnchorPosition.BELOW : AnchorPosition.ABOVE,
 					writes: [{ sessionId: SESSION_ID, property, value: 'read' }],
 				});
 			});

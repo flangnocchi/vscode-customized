@@ -1272,7 +1272,7 @@ export class AgentHostSessionConfigPicker extends Disposable {
 			{
 				...(showFilter ? { showFilter: true, filterPlaceholder: localize('agentHostSessionConfig.filter', "Filter options...") } : {}),
 				minWidth: 255,
-				anchorPosition: AnchorPosition.BELOW,
+				anchorPosition: provider.getCreateSessionConfig(sessionId) !== undefined ? AnchorPosition.BELOW : AnchorPosition.ABOVE,
 				maxVisibleItems: isBranchPicker ? BRANCH_PICKER_MAX_VISIBLE_ITEMS : undefined,
 			},
 		);
