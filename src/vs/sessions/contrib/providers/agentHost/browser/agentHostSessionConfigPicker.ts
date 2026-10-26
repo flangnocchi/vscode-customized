@@ -1986,19 +1986,24 @@ export class AgentHostSessionConfigPickerContribution extends Disposable impleme
 			properties.forEach(([property, schema], index) => {
 				const commandId = this._registerRepositoryProperty(property, actionViewItemService);
 				const order = index + 1;
-				this._repositoryMenuItems.add(MenuRegistry.appendMenuItem(Menus.NewSessionRepositoryConfig, {
-					command: {
-						id: commandId,
-						title: schema.title ?? property,
-					},
-					group: getNewSessionRepositoryConfigGroup(order, commandId),
-					order,
-					when: ContextKeyExpr.and(
-						ChatContextKeys.enabled,
-						IsQuickChatSessionContext.negate(),
-						SessionIdContext.isEqualTo(session.sessionId),
-					),
-				}));
+				const when = ContextKeyExpr.and(ChatContextKeys.enabled, IsQuickChatSessionContext.negate(), SessionIdContext.isEqualTo(session.sessionId));
+				const presentation = getSessionConfigPresentationKey(property, config.schema);
+				const isRepositoryProperty = [SessionConfigKey.Isolation, SessionConfigKey.Branch, 'newBranch'].includes(presentation);
+				// Workspace-less composers omit the repository row. Provider-owned
+				// controls such as native permission modes belong beside the input.
+				const menus = isRepositoryProperty
+					? [{ id: Menus.NewSessionRepositoryConfig, group: getNewSessionRepositoryConfigGroup(order, commandId), order, when }]
+					: [
+						{ id: Menus.NewSessionControl, group: 'navigation', order: 4 + order, when },
+						{ id: MenuId.ChatInput, group: 'navigation', order: 0.5 + order / 100, when: ContextKeyExpr.and(when, ChatContextKeyExprs.isAgentHostSession, ExperimentalSessionComposerLayout) },
+						{ id: MenuId.ChatInputSecondary, group: 'navigation', order: 13 + order, when: ContextKeyExpr.and(when, ChatContextKeyExprs.isAgentHostSession, LegacySessionComposerLayout) },
+					];
+				for (const menu of menus) {
+					this._repositoryMenuItems.add(MenuRegistry.appendMenuItem(menu.id, {
+						command: { id: commandId, title: schema.title ?? property },
+						group: menu.group, order: menu.order, when: menu.when,
+					}));
+				}
 			});
 		}
 	}
@@ -2011,20 +2016,22 @@ export class AgentHostSessionConfigPickerContribution extends Disposable impleme
 
 		const store = new DisposableStore();
 		store.add(CommandsRegistry.registerCommand(commandId, () => { }));
-		store.add(actionViewItemService.register(
-			Menus.NewSessionRepositoryConfig,
-			commandId,
-			(action, options, scopedInstantiationService) => {
-				const { session } = scopedInstantiationService.invokeFunction(accessor => accessor.get(ISessionContext));
-				return new PickerActionViewItem(
-					scopedInstantiationService.createInstance(MobileAgentHostSessionConfigPicker, session, property),
-					undefined,
-					true,
-					options,
-					action,
-				);
-			},
-		));
+		for (const menu of [Menus.NewSessionRepositoryConfig, Menus.NewSessionControl, MenuId.ChatInput, MenuId.ChatInputSecondary]) {
+			store.add(actionViewItemService.register(
+				menu,
+				commandId,
+				(action, options, scopedInstantiationService) => {
+					const { session } = scopedInstantiationService.invokeFunction(accessor => accessor.get(ISessionContext));
+					return new PickerActionViewItem(
+						scopedInstantiationService.createInstance(MobileAgentHostSessionConfigPicker, session, property),
+						undefined,
+						true,
+						options,
+						action,
+					);
+				},
+			));
+		}
 		this._repositoryPropertyRegistrations.set(commandId, store);
 		return commandId;
 	}
