@@ -27,7 +27,7 @@ import { checkoutOperationDirtyWorkingTreeErrorData } from '../../../../../../..
 import { SessionConfigKey } from '../../../../../../../platform/agentHost/common/sessionConfigKeys.js';
 import { JsonRpcErrorCodes, ProtocolError } from '../../../../../../../platform/agentHost/common/state/sessionProtocol.js';
 import { ResolveSessionConfigResult, SessionConfigPropertySchema, SessionConfigValueItem } from '../../../../../../../platform/agentHost/common/state/protocol/commands.js';
-import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../../../platform/configuration/common/configuration.js';
+import { IConfigurationChangeEvent, IConfigurationService, type IConfigurationValue } from '../../../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { Context } from '../../../../../../../platform/contextkey/browser/contextKeyService.js';
 import { IContextKeyService } from '../../../../../../../platform/contextkey/common/contextkey.js';
@@ -63,6 +63,7 @@ import { ISessionsProvider } from '../../../../../../services/sessions/common/se
 import { AgentHostSessionConfigPicker, AgentHostSessionConfigPickerContribution, IConfigPickerItem, PickerActionViewItem } from '../../../browser/agentHostSessionConfigPicker.js';
 import { getWindow } from '../../../../../../../base/browser/dom.js';
 import { ENVIRONMENT_PICKER_SETTING, EXPERIMENTAL_NEW_SESSION_COMPOSER_LAYOUT_SETTING, UNIFIED_WORKSPACE_PICKER_SETTING } from '../../../../../../contrib/chat/common/constants.js';
+import { ChatConfiguration } from '../../../../../../../workbench/contrib/chat/common/constants.js';
 import '../../../../../chat/browser/media/chatWidget.css';
 
 const SESSION_ID = 'local-agent-host:s1';
@@ -274,6 +275,8 @@ function setupServices(
 	store: Pick<ReturnType<typeof ensureNoDisposablesAreLeakedInTestSuite>, 'add'>,
 	options?: {
 		withoutPickerVisibility?: boolean;
+		/** Organization policy that disables auto-approval. */
+		autoApprovePolicyDisabled?: boolean;
 		checkoutDialogChoice?: 'Stash & Checkout' | 'Commit & Checkout';
 		checkoutDialogShown?: DeferredPromise<void>;
 		checkoutDialogRelease?: DeferredPromise<void>;
@@ -315,8 +318,14 @@ function setupServices(
 		instantiationService.stub(ISessionInputPickerVisibility, store.add(new SessionInputPickerVisibility()));
 	}
 	instantiationService.stub(ITelemetryService, NullTelemetryService);
-	const configurationService = new TestConfigurationService({
+	const configurationService = new class extends TestConfigurationService {
+		override inspect<T>(key: string): IConfigurationValue<T> {
+			const result = super.inspect<T>(key);
+			return { ...result, policyValue: options?.autoApprovePolicyDisabled && key === ChatConfiguration.GlobalAutoApprove ? result.value : undefined };
+		}
+	}({
 		[DevContainerWorktreeEnabledSettingId]: false,
+		[ChatConfiguration.GlobalAutoApprove]: false,
 	});
 	store.add(configurationService.onDidChangeConfigurationEmitter);
 	instantiationService.stub(IConfigurationService, configurationService);
@@ -472,6 +481,25 @@ suite('Agent Host Session Config Picker', () => {
 					anchorPosition: isNew ? AnchorPosition.BELOW : AnchorPosition.ABOVE,
 					writes: [{ sessionId: SESSION_ID, property, value: 'read' }],
 				});
+			});
+		}
+	}
+
+	for (const [providerId, fullAccess] of [['dsh', 'danger-full-access'], ['zcode', 'yolo']]) {
+		for (const policyDisabled of [false, true]) {
+			test(`${providerId}: the mode that approves everything is ${policyDisabled ? 'disabled' : 'offered'} ${policyDisabled ? 'while policy disables auto-approval' : 'without such a policy'}`, async () => {
+				const services = setupServices(store, { autoApprovePolicyDisabled: policyDisabled });
+				const property = `${providerId}.permissionMode`;
+				services.provider.config = {
+					schema: { type: 'object', properties: {
+						[property]: { type: 'string', title: 'Permissions', enum: ['safe', fullAccess], enumLabels: ['Safe', 'Full Access'], default: 'safe', sessionMutable: true, chatMutable: true },
+					} },
+					values: { [property]: 'safe' },
+				};
+				const { container } = renderPicker(store, services);
+				container.querySelector<HTMLElement>(`[data-session-config-property="${property}"] .action-label`)!.click();
+				await timeout(0);
+				assert.deepStrictEqual(services.actionWidget.items.map(item => [item.label, item.disabled]), [['Safe', false], ['Full Access', policyDisabled]]);
 			});
 		}
 	}

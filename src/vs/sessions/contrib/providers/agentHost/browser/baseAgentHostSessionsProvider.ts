@@ -86,7 +86,7 @@ import { IChatSessionFileChange, IChatSessionFileChange2, IChatSessionsService }
 import { assertAutomationSessionTemplate, IAutomationSessionTemplate } from '../../../../../workbench/contrib/chat/common/automations/automation.js';
 import { AutomationModelConfiguration } from '../../../automations/browser/automationModelConfiguration.js';
 import { ChatAgentLocation, ChatConfiguration, ChatModeKind, ChatPermissionLevel, getChatPermissionLevelFromDefaultConfiguration, isChatPermissionLevel, type IChatDefaultConfiguration } from '../../../../../workbench/contrib/chat/common/constants.js';
-import { getAgentHostApprovalDefault, getChatDefaultConfiguration, isAutoApprovePolicyRestricted, normalizeAgentHostApprovalConfig, normalizeSessionConfigValue } from '../../../../../workbench/contrib/chat/common/agentHostConfigPolicy.js';
+import { getAgentHostApprovalDefault, getChatDefaultConfiguration, isAutoApprovePolicyRestricted, isNativeCliFullAccessPolicyRestricted, normalizeAgentHostApprovalConfig, normalizeSessionConfigValue } from '../../../../../workbench/contrib/chat/common/agentHostConfigPolicy.js';
 import { ILanguageModelsService } from '../../../../../workbench/contrib/chat/common/languageModels.js';
 import { getRegisteredLanguageModels, getVisibleLanguageModelsForTarget, resolveConfiguredModel, resolveModelIdentifier, resolveModelIdentifierFromLanguageModels } from '../../../../../workbench/contrib/chat/common/modelSelection.js';
 import { canInitializeCodexWithoutGitHub } from '../../../../../workbench/services/agentHost/browser/codexAccountService.js';
@@ -5709,8 +5709,10 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		// legacy `autoApprove='autopilot'` remembered value into the new
 		// `mode='autopilot'` shape before the per-axis precedence below runs.
 		const rememberedValues = this._storageService.getObject<Record<string, unknown>>(STORAGE_KEY_REMEMBERED_SESSION_CONFIG_VALUES, StorageScope.PROFILE, {});
+		// A pick that policy now withholds is not carried into a new session, as for the approval level below.
+		const autoApproveRestricted = this._baseConfigurationService.inspect<boolean>(ChatConfiguration.GlobalAutoApprove).policyValue === false;
 		for (const [property, value] of Object.entries(rememberedValues)) {
-			if (typeof value === 'string' && isGloballyRememberedSessionConfigKey(property)) {
+			if (typeof value === 'string' && isGloballyRememberedSessionConfigKey(property) && !isNativeCliFullAccessPolicyRestricted(property, value, autoApproveRestricted)) {
 				config[property] = value;
 			}
 		}
@@ -6162,6 +6164,10 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 		this._assertSessionAvailable(sessionId);
 		const policyRestricted = isAutoApprovePolicyRestricted(this._baseConfigurationService, this.getSessionConfig(sessionId, chat)?.schema);
 		const normalizedValue = normalizeSessionConfigValue(property, value, policyRestricted);
+		if (isNativeCliFullAccessPolicyRestricted(property, normalizedValue, policyRestricted)) {
+			// The picker disables this choice for the same reason. A write from anywhere else must not get around it.
+			throw new Error(localize('agentHostSessionConfig.policyDisabled', "Disabled by your organization. Contact your administrator."));
+		}
 
 		// Mark resolution before firing so the first picker render is already inert.
 		const newSession = this._getNewSession(sessionId);
@@ -6272,6 +6278,10 @@ export abstract class BaseAgentHostSessionsProvider extends Disposable implement
 			const editable = schema.sessionMutable === true && schema.readOnly !== true;
 			if (editable) {
 				nextValues[key] = normalizeSessionConfigValue(key, values[key], policyRestricted);
+				if (isNativeCliFullAccessPolicyRestricted(key, nextValues[key], policyRestricted)) {
+					// Policy withholds this choice, so the chat keeps what it has.
+					nextValues[key] = runningConfig.values[key];
+				}
 				if (nextValues[key] !== undefined) {
 					validateSessionConfigWrite(runningConfig.schema, runningConfig.values, key, nextValues[key], false);
 				}

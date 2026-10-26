@@ -5,7 +5,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { nativeCliPermissionModeKey, offersNoNativeCliPermissions, readNativeCliPermissions, resolveNativeCliPermissionConfig } from '../../node/nativeCli/nativeCliPermissions.js';
+import { nativeCliPermissionModeKey } from '../../common/nativeCliAgentConfig.js';
+import { offersNoNativeCliPermissions, readNativeCliPermissions, resolveNativeCliPermissionConfig } from '../../node/nativeCli/nativeCliPermissions.js';
 
 suite('Native CLI permissions', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();

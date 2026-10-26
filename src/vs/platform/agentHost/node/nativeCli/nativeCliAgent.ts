@@ -18,7 +18,7 @@ import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../log/common/log.js';
 import { INativeEnvironmentService } from '../../../environment/common/environment.js';
 import { AgentSession, type AgentSignal, type IActiveClient, type IAgent, type IAgentChatContext, type IAgentChatDataChange, type IAgentChats, type IAgentCreateChatOptions, type IAgentCreateChatResult, type IAgentMaterializeChatEvent, type IAgentModelInfo, type IAgentResolveChatConfigParams, resolveAgentChatContext } from '../../common/agent.js';
-import { type INativeCliAgentConfig, type NativeCliAgentId, nativeCliAgentEnv, nativeCliAgentIds } from '../../common/nativeCliAgentConfig.js';
+import { type INativeCliAgentConfig, type NativeCliAgentId, nativeCliAgentEnv, nativeCliAgentIds, nativeCliPermissionModeKey } from '../../common/nativeCliAgentConfig.js';
 import { ISessionDataService } from '../../common/sessionDataService.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, ChatInputResponseKind, TurnState, type ChatInputAnswer, type ChatInputQuestion, type Customization, type ModelSelection, type Turn } from '../../common/state/sessionState.js';
@@ -29,7 +29,7 @@ import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } f
 import { discoverNativeCliRuntimeSnapshot, nativeCliCustomizations } from './nativeCliCustomizations.js';
 import { canObserveNativeCliRuntime, observeNativeCliRuntime, type INativeCliObservedLaunch } from './nativeCliRuntime.js';
 import { IAgentConfigurationService } from '../agentConfigurationService.js';
-import { nativeCliPermissionModeKey, offersNoNativeCliPermissions, readNativeCliPermissions, resolveNativeCliPermissionConfig, type INativeCliPermissions } from './nativeCliPermissions.js';
+import { offersNoNativeCliPermissions, readNativeCliPermissions, resolveNativeCliPermissionConfig, type INativeCliPermissions } from './nativeCliPermissions.js';
 
 /** A hung native CLI must not stall chat creation, so every discovery is abandoned after this long. */
 const nativeDiscoveryTimeoutMs = 30_000;

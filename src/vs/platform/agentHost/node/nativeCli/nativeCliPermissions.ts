@@ -4,12 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { localize } from '../../../../nls.js';
-import type { NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
+import { nativeCliPermissionModeKey, type NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import type { ResolveSessionConfigResult } from '../../common/state/protocol/commands.js';
 import { record, type NativeRecord } from './nativeCliTransport.js';
-
-/** Each provider owns its mode vocabulary, including while switching a draft's harness. */
-export function nativeCliPermissionModeKey(id: NativeCliAgentId): string { return `${id}.permissionMode`; }
 
 export interface INativeCliPermissions {
 	readonly options: readonly { readonly id: string; readonly name: string; readonly description?: string }[];

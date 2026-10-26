@@ -8,6 +8,7 @@ import { isObject } from '../../../../base/common/types.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IAgentConnection } from '../../../../platform/agentHost/common/agentService.js';
+import { isNativeCliFullAccessMode } from '../../../../platform/agentHost/common/nativeCliAgentConfig.js';
 import { getAvailableSessionApprovalValues, getSessionApprovalProperty, writeSessionApprovalLevel } from '../../../../platform/agentHost/common/sessionConfigProperties.js';
 import { SessionConfigKey } from '../../../../platform/agentHost/common/sessionConfigKeys.js';
 import { ResolveSessionConfigResult, SessionConfigSchema } from '../../../../platform/agentHost/common/state/protocol/commands.js';
@@ -106,6 +107,14 @@ export function isApprovalLevelDisabledByKnownPolicy(level: string, configuratio
 
 export function isAutoApproveValuePolicyRestricted(value: unknown, policyRestricted: boolean): boolean {
 	return policyRestricted && value !== ChatPermissionLevel.Default;
+}
+
+/**
+ * Whether policy that disables auto-approval also withholds `value` of `property`: the native mode that approves
+ * every action without asking is auto-approval under another name.
+ */
+export function isNativeCliFullAccessPolicyRestricted(property: string, value: unknown, policyRestricted: boolean): boolean {
+	return policyRestricted && isNativeCliFullAccessMode(property, value);
 }
 
 /** Disables the global override when the user explicitly selects a lower session permission. */

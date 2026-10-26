@@ -82,7 +82,8 @@ import { ProtocolError } from '../../../../../platform/agentHost/common/state/se
 import { AgentHostClaudePermissionModePicker } from './agentHostClaudePermissionModePicker.js';
 import { ClaudeSessionConfigKey } from '../../../../../platform/agentHost/common/claudeSessionConfigKeys.js';
 import { AgentHostCodexApprovalsPicker } from './agentHostCodexApprovalsPicker.js';
-import { getOrganizationDefaultApprovalLevel, isAutoApproveValuePolicyRestricted } from '../../../../../workbench/contrib/chat/common/agentHostConfigPolicy.js';
+import { getOrganizationDefaultApprovalLevel, isAutoApproveValuePolicyRestricted, isNativeCliFullAccessPolicyRestricted } from '../../../../../workbench/contrib/chat/common/agentHostConfigPolicy.js';
+import { isNativeCliPermissionProperty } from '../../../../../platform/agentHost/common/nativeCliAgentConfig.js';
 import { getPermissionLevelBadge } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentHost/agentHostModePickerPresentation.js';
 import { BRANCH_PICKER_MAX_VISIBLE_ITEMS, ensureSelectedBranchPickerItem, filterBranchPickerItems } from '../../../../../workbench/contrib/chat/browser/agentSessions/agentHost/agentHostBranchPicker.js';
 import { CodexSessionConfigKey } from '../../../../../platform/agentHost/common/codexSessionConfigKeys.js';
@@ -177,7 +178,8 @@ function toActionItems(property: string, items: readonly IConfigPickerItem[], cu
 		? ensureSelectedBranchPickerItem(items, currentValue, query)
 		: items;
 	const actionItems: IActionListItem<IConfigPickerItem>[] = pickerItems.map(item => {
-		const policyDisabled = property === SessionConfigKey.AutoApprove && isAutoApproveValuePolicyRestricted(item.value, policyRestricted === true);
+		const policyDisabled = (property === SessionConfigKey.AutoApprove && isAutoApproveValuePolicyRestricted(item.value, policyRestricted === true))
+			|| isNativeCliFullAccessPolicyRestricted(property, item.value, policyRestricted === true);
 		const disabled = item.disabled || policyDisabled;
 		const checked = isSelectedValue(currentValue, item.value);
 		const uncommittedChanges = property === SessionConfigKey.Branch
@@ -364,15 +366,16 @@ function renderPickerTrigger(slot: HTMLElement, disabled: boolean, disposables: 
 
 // Track whether auto-approve warnings have been shown this VS Code session
 /**
- * Marks bypass/autopilot as disabled if enterprise policy restricts
- * auto-approval. Returns the items and policy state.
+ * Marks bypass/autopilot, and the native modes that approve everything, as
+ * disabled if enterprise policy restricts auto-approval. Returns the items
+ * and policy state.
  */
 function applyAutoApproveFiltering(
 	items: readonly IConfigPickerItem[],
 	property: string,
 	configurationService: IConfigurationService,
 ): { readonly items: readonly IConfigPickerItem[]; readonly policyRestricted: boolean } {
-	if (property !== SessionConfigKey.AutoApprove) {
+	if (property !== SessionConfigKey.AutoApprove && !isNativeCliPermissionProperty(property)) {
 		return { items, policyRestricted: false };
 	}
 	const policyRestricted = configurationService.inspect<boolean>(ChatConfiguration.GlobalAutoApprove).policyValue === false;
