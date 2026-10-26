@@ -422,10 +422,6 @@ function isRenderableSessionConfigProperty(property: string, schema: SessionConf
 	return true;
 }
 
-function isRepositoryConfigProperty(property: string, schema: SessionConfigSchema): boolean {
-	return [SessionConfigKey.Isolation, SessionConfigKey.Branch, 'newBranch'].includes(getSessionConfigPresentationKey(property, schema));
-}
-
 function orderSessionConfigProperties(
 	properties: ReadonlyArray<[string, SessionConfigPropertySchema]>,
 	phoneLayout: boolean,
@@ -1275,7 +1271,8 @@ export class AgentHostSessionConfigPicker extends Disposable {
 			{
 				...(showFilter ? { showFilter: true, filterPlaceholder: localize('agentHostSessionConfig.filter', "Filter options...") } : {}),
 				minWidth: 255,
-				anchorPosition: provider.getCreateSessionConfig(sessionId) !== undefined ? AnchorPosition.BELOW : AnchorPosition.ABOVE,
+				// The native permission picker of a running chat sits beside the input, at the bottom of the view.
+				anchorPosition: provider.getCreateSessionConfig(sessionId) !== undefined || !isNativeCliPermissionProperty(property) ? AnchorPosition.BELOW : AnchorPosition.ABOVE,
 				maxVisibleItems: isBranchPicker ? BRANCH_PICKER_MAX_VISIBLE_ITEMS : undefined,
 			},
 		);
@@ -1693,12 +1690,13 @@ class MobileAgentHostSessionConfigPicker extends AgentHostSessionConfigPicker {
 	}
 }
 
-/** Additional provider controls use the composer's own context, including workspace-less drafts. */
+/**
+ * The native permission mode of a chat. It sits beside the input, in the composer's own context, so that it is
+ * available to workspace-less drafts, which have no repository row. Every other property keeps its own place.
+ */
 class AgentHostAdditionalConfigPicker extends MobileAgentHostSessionConfigPicker {
 	protected override _shouldRenderProperty(property: string, schema: SessionConfigPropertySchema, isNewSession: boolean): boolean {
-		const session = this._session.get();
-		const config = session && this._getProvider(session.providerId)?.getSessionConfig(session.sessionId, session.activeChat.get().resource);
-		return !!config && !isRepositoryConfigProperty(property, config.schema) && super._shouldRenderProperty(property, schema, isNewSession);
+		return isNativeCliPermissionProperty(property) && super._shouldRenderProperty(property, schema, isNewSession);
 	}
 }
 
@@ -2004,7 +2002,7 @@ export class AgentHostSessionConfigPickerContribution extends Disposable impleme
 				Object.entries(config.schema.properties),
 				isPhoneLayout(this._layoutService),
 			).filter(([property, schema]) =>
-				isRepositoryConfigProperty(property, config.schema) &&
+				!isNativeCliPermissionProperty(property) &&
 				isRenderableSessionConfigProperty(property, schema, config.schema, isNewSession) &&
 				(isNewSession || schema.sessionMutable || property === workspace.isolation?.key || property === workspace.baseBranch?.key)
 			);
@@ -2021,9 +2019,17 @@ export class AgentHostSessionConfigPickerContribution extends Disposable impleme
 				const commandId = this._registerRepositoryProperty(property, actionViewItemService);
 				const order = index + 1;
 				this._repositoryMenuItems.add(MenuRegistry.appendMenuItem(Menus.NewSessionRepositoryConfig, {
-					command: { id: commandId, title: schema.title ?? property },
-					group: getNewSessionRepositoryConfigGroup(order, commandId), order,
-					when: ContextKeyExpr.and(ChatContextKeys.enabled, IsQuickChatSessionContext.negate(), SessionIdContext.isEqualTo(session.sessionId)),
+					command: {
+						id: commandId,
+						title: schema.title ?? property,
+					},
+					group: getNewSessionRepositoryConfigGroup(order, commandId),
+					order,
+					when: ContextKeyExpr.and(
+						ChatContextKeys.enabled,
+						IsQuickChatSessionContext.negate(),
+						SessionIdContext.isEqualTo(session.sessionId),
+					),
 				}));
 			});
 		}
@@ -2044,7 +2050,10 @@ export class AgentHostSessionConfigPickerContribution extends Disposable impleme
 				const { session } = scopedInstantiationService.invokeFunction(accessor => accessor.get(ISessionContext));
 				return new PickerActionViewItem(
 					scopedInstantiationService.createInstance(MobileAgentHostSessionConfigPicker, session, property),
-					undefined, true, options, action,
+					undefined,
+					true,
+					options,
+					action,
 				);
 			},
 		));
