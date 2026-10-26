@@ -18,7 +18,7 @@ import { withMcpServerSourceMeta } from '../../common/meta/mcpCustomizationMeta.
 import { CustomizationEnablementKind, McpServerStatus } from '../../common/state/protocol/state.js';
 import { CustomizationLoadStatus, CustomizationType, customizationId, type AgentCustomization, type Customization, type DirectoryCustomization, type HookCustomization, type McpServerCustomization, type RuleCustomization, type SkillCustomization } from '../../common/state/sessionState.js';
 import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } from './nativeCliTransport.js';
-import { dshRuntimeObserver, observeNativeCliRuntime } from './nativeCliRuntime.js';
+import { canObserveNativeCliRuntime, dshRuntimeObserver, observeNativeCliRuntime } from './nativeCliRuntime.js';
 import { isolatedZcodeEnvironment, zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
 
 /** Maps native metadata only. No foreign harness directories or file contents are scanned. */
@@ -106,6 +106,8 @@ export function nativeCliCustomizations(id: NativeCliAgentId, snapshot: NativeRe
 
 async function readDshCustomizations(launch: INativeCliLaunch, signal: AbortSignal): Promise<NativeRecord> {
 	if (signal.aborted) { throw new CancellationError(); }
+	// Any other launch is the user's own command line, which is never extended with the observer.
+	if (!canObserveNativeCliRuntime(launch)) { return { complete: true, scope: 'workspace', tools: [], toolsState: 'unavailable' }; }
 	const temporary = await fs.mkdtemp(join(tmpdir(), 'vscode-dsh-customizations-'));
 	try {
 		const plugin = join(temporary, 'inventory.mjs');

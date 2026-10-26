@@ -87,7 +87,7 @@ import(url.pathToFileURL(plugin).href).then(module=>module.apply({
 }));
 `;
 		try {
-			const result = await discoverNativeCliCustomizations('dsh', { executable: process.execPath, args: ['-e', fixture, '--'], cwd: root, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', TEST_NATIVE_AUDIT: audit }, jsonrpc: true }, new AbortController().signal);
+			const result = await discoverNativeCliCustomizations('dsh', { executable: process.execPath, args: ['-e', fixture, '--', '--profile', 'sdk'], cwd: root, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', TEST_NATIVE_AUDIT: audit }, jsonrpc: true }, new AbortController().signal);
 			const paths = JSON.parse(await fs.readFile(audit, 'utf8')) as { patch: string; plugin: string; cwd: string };
 			assert.deepStrictEqual({ cwd: paths.cwd, items: result.flatMap(directory => directory.type === CustomizationType.Directory ? directory.children ?? [] : []).map(child => [child.type, child.name]), observationPluginVisible: readRuntimePlugins(result).some(plugin => plugin.name === paths.plugin) }, { cwd: await fs.realpath(root), items: [['skill', 'native-skill'], ['rule', 'CUSTOM.md']], observationPluginVisible: false });
 			await assert.rejects(fs.stat(paths.patch), { code: 'ENOENT' });
@@ -109,6 +109,11 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 `;
 		const result = await discoverNativeCliCustomizations('zcode', { executable: process.execPath, args: ['-e', fixture], cwd: tmpdir(), env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, jsonrpc: false }, new AbortController().signal);
 		assert.deepStrictEqual(result.flatMap(directory => directory.type === CustomizationType.Directory ? directory.children ?? [] : []).map(child => [child.name, child.uri]), [['zcode-skill', URI.file(join(tmpdir(), 'SKILL.md')).toString()]]);
+	});
+
+	test('a DSH command line that is not a profile server is never launched or extended', async () => {
+		const result = await discoverNativeCliCustomizations('dsh', { executable: 'must-not-launch', args: ['serve'], cwd: tmpdir(), env: {}, jsonrpc: true }, new AbortController().signal);
+		assert.deepStrictEqual(readRuntimeToolInventory(result), { provider: 'dsh', label: 'DeepSeek Harness', scope: 'workspace', state: 'unavailable', tools: [] });
 	});
 
 	test('aborted discovery never starts a native process', async () => {

@@ -16,6 +16,7 @@ import { INativeEnvironmentService } from '../../../environment/common/environme
 import { NullLogService } from '../../../log/common/log.js';
 import { type IAgentChatContext, fixedChatOwnerRef } from '../../common/agent.js';
 import { type INativeCliAgentConfig } from '../../common/nativeCliAgentConfig.js';
+import { readRuntimeToolInventory } from '../../common/meta/runtimeToolInventory.js';
 import { TurnState } from '../../common/state/sessionState.js';
 import { IAgentConfigurationService } from '../../node/agentConfigurationService.js';
 import { NativeCliAgent } from '../../node/nativeCli/nativeCliAgent.js';
@@ -213,6 +214,13 @@ suite('Native CLI agent discovery', () => {
 		await provider.getChatCustomizations(draft, context(draft, undefined));
 		await provider.getChatCustomizations(draft, context(draft, undefined));
 		assert.strictEqual(await launches('inventory') - before, 3, 'a complete inspection is reused');
+	});
+
+	test('a runtime that cannot be extended reports no tools and is never inspected', async () => {
+		const provider = agent(NativeCliAgent, { ...config, args: ['-e', fixture] });
+		const draft = URI.parse('ahp-chat:/not-extended');
+		const customizations = await provider.getChatCustomizations(draft, context(draft, undefined));
+		assert.deepStrictEqual({ state: readRuntimeToolInventory(customizations)?.state, inspections: await launches('inventory') }, { state: 'unavailable', inspections: 0 });
 	});
 
 	test('a runtime that cannot report permission modes still runs a chat that remembers one', async () => {
