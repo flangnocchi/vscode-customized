@@ -439,7 +439,7 @@ suite('Agent Host Session Config Picker', () => {
 				services.instantiationService.stub(IActionViewItemService, new class extends mock<IActionViewItemService>() {
 					override readonly onDidChange = Event.None;
 					override register(menu: MenuId, commandId: string | MenuId, factory: IActionViewItemFactory) {
-						if (String(commandId).endsWith(property)) { factories.set(menu, factory); }
+						if (commandId === 'sessions.agentHost.additionalSessionConfigPicker') { factories.set(menu, factory); }
 						return toDisposable(() => { });
 					}
 				}());
@@ -447,14 +447,14 @@ suite('Agent Host Session Config Picker', () => {
 					override readonly mainContainer = document.createElement('div');
 				}());
 				services.instantiationService.stub(ISessionsService, new class extends mock<ISessionsService>() {
-					override readonly visibleSessions = constObservable([services.activeSession]);
+					override readonly visibleSessions = constObservable([undefined]);
 				}());
 				services.instantiationService.stub(ISessionContext, new class extends mock<ISessionContext>() {
 					override readonly session = constObservable(services.activeSession);
 				}());
 				store.add(services.instantiationService.createInstance(AgentHostSessionConfigPickerContribution));
 				const menus = [Menus.NewSessionControl, MenuId.ChatInput, MenuId.ChatInputSecondary, Menus.NewSessionRepositoryConfig];
-				const menuItems = menus.map(menu => MenuRegistry.getMenuItems(menu).filter(isIMenuItem).filter(item => item.command.id.endsWith(property)));
+				const menuItems = menus.map(menu => MenuRegistry.getMenuItems(menu).filter(isIMenuItem).filter(item => item.command.id === 'sessions.agentHost.additionalSessionConfigPicker'));
 				const action = toAction({ id: menuItems[0][0].command.id, label: 'Permissions', run: () => { } });
 				const item = store.add(factories.get(Menus.NewSessionControl)!(action, {}, services.instantiationService, mainWindow.vscodeWindowId)!);
 				const container = document.createElement('div');
