@@ -32,7 +32,7 @@ if (mode === 'inventory') {
 	if (process.env.NATIVE_FIXTURE_HANG) { setInterval(() => { }, 1000); }
 	else {
 		const modes = [{ id: 'read-only', name: 'Read Only' }, { id: 'workspace-write', name: 'Workspace Access' }];
-		fs.writeFileSync(process.env.VSCODE_NATIVE_INVENTORY_RESULT, JSON.stringify({ complete: process.env.NATIVE_FIXTURE_INCOMPLETE ? false : true, skills: [], tools: [], scope: 'workspace', permissions: { options: modes, defaultMode: 'workspace-write' } }));
+		fs.writeFileSync(process.env.VSCODE_NATIVE_INVENTORY_RESULT, JSON.stringify({ complete: process.env.NATIVE_FIXTURE_INCOMPLETE ? false : true, skills: [], tools: [], scope: 'workspace', permissions: process.env.NATIVE_FIXTURE_NO_PERMISSIONS ? undefined : { options: modes, defaultMode: 'workspace-write' } }));
 		process.stderr.write('VSCODE_NATIVE_INVENTORY_READY\n');
 		process.stdin.resume();
 	}
@@ -100,6 +100,7 @@ suite('Native CLI agent discovery', () => {
 		delete process.env.NATIVE_FIXTURE_LOG;
 		delete process.env.NATIVE_FIXTURE_HANG;
 		delete process.env.NATIVE_FIXTURE_INCOMPLETE;
+		delete process.env.NATIVE_FIXTURE_NO_PERMISSIONS;
 		await Promise.all(providers.splice(0).map(provider => provider.shutdown()));
 		store.clear();
 		await fs.rm(root, { recursive: true, force: true });
@@ -214,6 +215,20 @@ suite('Native CLI agent discovery', () => {
 		await provider.getChatCustomizations(draft, context(draft, undefined));
 		await provider.getChatCustomizations(draft, context(draft, undefined));
 		assert.strictEqual(await launches('inventory') - before, 3, 'a complete inspection is reused');
+	});
+
+	test('a runtime that lists no permission modes is not asked again', async () => {
+		process.env.NATIVE_FIXTURE_NO_PERMISSIONS = '1';
+		const clock = sinon.useFakeTimers({ now: Date.now(), toFake: ['Date'] });
+		try {
+			const provider = agent();
+			assert.deepStrictEqual(Object.keys((await provider.resolveChatConfig()).schema.properties ?? {}), []);
+			clock.tick(10 * 60_000);
+			assert.deepStrictEqual(Object.keys((await provider.resolveChatConfig()).schema.properties ?? {}), []);
+			assert.strictEqual(await launches('inventory'), 1, 'nothing changes the answer, so it is not read again after the pause or the cache');
+		} finally {
+			clock.restore();
+		}
 	});
 
 	test('a runtime that cannot be extended reports no tools and is never inspected', async () => {

@@ -29,7 +29,7 @@ import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } f
 import { discoverNativeCliRuntimeSnapshot, nativeCliCustomizations } from './nativeCliCustomizations.js';
 import { canObserveNativeCliRuntime, observeNativeCliRuntime, type INativeCliObservedLaunch } from './nativeCliRuntime.js';
 import { IAgentConfigurationService } from '../agentConfigurationService.js';
-import { nativeCliPermissionModeKey, readNativeCliPermissions, resolveNativeCliPermissionConfig, type INativeCliPermissions } from './nativeCliPermissions.js';
+import { nativeCliPermissionModeKey, offersNoNativeCliPermissions, readNativeCliPermissions, resolveNativeCliPermissionConfig, type INativeCliPermissions } from './nativeCliPermissions.js';
 
 /** A hung native CLI must not stall chat creation, so every discovery is abandoned after this long. */
 const nativeDiscoveryTimeoutMs = 30_000;
@@ -264,10 +264,14 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			const home = this.environmentService.userHome.fsPath;
 			// Only the bundled runtimes can be observed; any other CLI offers no permission choices.
 			if (!canObserveNativeCliRuntime(await nativeCliLaunch(this.id, this.config, home))) { this.permissionsObservable = false; return; }
-			const catalog = readNativeCliPermissions(await this.discoverSnapshot(home));
+			const snapshot = await this.discoverSnapshot(home);
+			const catalog = readNativeCliPermissions(snapshot);
 			if (!this.closing) {
 				this.permissionCatalog = catalog;
-				this.permissionsFailedAt = catalog ? undefined : Date.now();
+				// A runtime that lists no modes has none to offer, and asking again cannot change that. Any other
+				// answer that is not a catalog was not read, and is tried again after a pause.
+				if (!catalog && offersNoNativeCliPermissions(snapshot)) { this.permissionsObservable = false; }
+				this.permissionsFailedAt = catalog || !this.permissionsObservable ? undefined : Date.now();
 			}
 		} catch (error) {
 			this.permissionsFailedAt = Date.now();

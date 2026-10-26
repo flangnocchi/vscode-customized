@@ -29,6 +29,16 @@ export function readNativeCliPermissions(value: NativeRecord): INativeCliPermiss
 	return options.some(option => option.id === catalog.defaultMode) ? { options, defaultMode: catalog.defaultMode } : undefined;
 }
 
+/**
+ * Whether a finished inspection shows a runtime with no permission modes to offer, as opposed to an answer that
+ * could not be read. Asking such a runtime again cannot change what it says.
+ */
+export function offersNoNativeCliPermissions(value: NativeRecord): boolean {
+	if (value.complete === false) { return false; }
+	const options = record(value.permissions).options;
+	return value.permissions === undefined || (Array.isArray(options) && options.length === 0);
+}
+
 function modeLabel(id: NativeCliAgentId, mode: string, fallback: string): string {
 	switch (`${id}:${mode}`) {
 		case 'dsh:read-only': return localize('nativeCli.permissions.readOnly', "Read Only");

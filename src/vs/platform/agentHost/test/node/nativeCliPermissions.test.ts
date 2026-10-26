@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { nativeCliPermissionModeKey, readNativeCliPermissions, resolveNativeCliPermissionConfig } from '../../node/nativeCli/nativeCliPermissions.js';
+import { nativeCliPermissionModeKey, offersNoNativeCliPermissions, readNativeCliPermissions, resolveNativeCliPermissionConfig } from '../../node/nativeCli/nativeCliPermissions.js';
 
 suite('Native CLI permissions', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -21,6 +21,16 @@ suite('Native CLI permissions', () => {
 	test('rejects unsupported selections and does not fabricate a catalog for an older SDK', () => {
 		assert.throws(() => resolveNativeCliPermissionConfig('dsh', catalog, { [key]: 'danger-full-access' }), /does not offer/);
 		assert.deepStrictEqual([readNativeCliPermissions({}), readNativeCliPermissions({ permissions: { ...catalog, defaultMode: 'missing' } })], [undefined, undefined]);
+	});
+
+	test('tells a runtime that has no permission modes from an answer that could not be read', () => {
+		assert.deepStrictEqual([
+			offersNoNativeCliPermissions({ complete: true }),
+			offersNoNativeCliPermissions({ complete: true, permissions: { options: [], defaultMode: 'build' } }),
+			offersNoNativeCliPermissions({ complete: false }),
+			offersNoNativeCliPermissions({ permissions: { options: [{ id: 1 }], defaultMode: 'build' } }),
+			offersNoNativeCliPermissions({ permissions: catalog }),
+		], [true, true, false, false, false]);
 	});
 
 	test('keeps one harness choice from overriding another harness default', () => {
