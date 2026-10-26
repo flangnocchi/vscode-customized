@@ -15,10 +15,10 @@ import { URI } from '../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../log/common/log.js';
 import { INativeEnvironmentService } from '../../../environment/common/environment.js';
-import { type IAgentChatContext, fixedChatOwnerRef } from '../../common/agent.js';
+import { type IAgentActionSignal, type IAgentChatContext, fixedChatOwnerRef } from '../../common/agent.js';
 import { nativeCliAgentEnv, type INativeCliAgentConfig, type NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
-import { ActionType } from '../../common/state/sessionActions.js';
-import { MessageKind, ResponsePartKind, TurnState, type Turn } from '../../common/state/sessionState.js';
+import { ActionType, type IToolCallReadyAction } from '../../common/state/sessionActions.js';
+import { MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, TurnState, type Turn } from '../../common/state/sessionState.js';
 import { NativeCliAgent, nativeCliLaunch, readNativeCliAgentConfigs } from '../../node/nativeCli/nativeCliAgent.js';
 import { NativeCliTransport } from '../../node/nativeCli/nativeCliTransport.js';
 import { NativeCliTurn } from '../../node/nativeCli/nativeCliTurn.js';
@@ -260,6 +260,37 @@ suite('Native CLI agents', () => {
 		turn.zcode({ type: 'part.upserted', payload: { part: { type: 'text', messageId: 'message', partId: 'committed', text: 'hello world' } } });
 		turn.zcode({ type: 'turn.completed', payload: { response: 'hello world', resultType: 'success' } });
 		assert.deepStrictEqual(turn.turn.responseParts.map(part => part.kind === ResponsePartKind.Markdown ? part.content : part.kind), ['hello world']);
+	});
+
+	test('later updates of a tool call that awaits a decision do not announce it as running again', () => {
+		const actions: IAgentActionSignal['action'][] = [];
+		const turn = new NativeCliTurn(URI.parse('ahp-chat:/pending'), 'turn', 'prompt', undefined, signal => { if (signal.kind === 'action') { actions.push(signal.action); } });
+		turn.tool('call', 'write', { path: 'a' });
+		turn.tool('call', 'write', undefined, true, 'Write a');
+		// ZCode repeats a call's state while the runtime waits for the answer.
+		turn.zcode({ eventId: '1', type: 'part.upserted', payload: { part: { type: 'tool', callId: 'call', tool: 'write', state: { status: 'running', input: { path: 'b' } } } } });
+		turn.zcode({ eventId: '2', type: 'tool.updated', payload: { toolCallId: 'call', kind: 'scheduled', toolName: 'write', input: { path: 'c' } } });
+		assert.deepStrictEqual(actions.flatMap(action => action.type === ActionType.ChatToolCallReady ? [{ confirmed: action.confirmed, title: action.confirmationTitle, input: action.toolInput }] : []), [
+			{ confirmed: ToolCallConfirmationReason.NotNeeded, title: undefined, input: '{"path":"a"}' },
+			{ confirmed: undefined, title: 'Write a', input: undefined },
+		]);
+	});
+
+	test('a tool call is announced again only when its input changes', () => {
+		const inputs: IToolCallReadyAction['toolInput'][] = [];
+		const turn = new NativeCliTurn(URI.parse('ahp-chat:/inputs'), 'turn', 'prompt', undefined, signal => { if (signal.kind === 'action' && signal.action.type === ActionType.ChatToolCallReady) { inputs.push(signal.action.toolInput); } });
+		turn.tool('call', 'read');
+		turn.tool('call', 'read', { path: 'a' });
+		turn.tool('call', 'read', { path: 'a' });
+		turn.tool('call', 'read');
+		assert.deepStrictEqual(inputs, [undefined, '{"path":"a"}']);
+	});
+
+	test('a tool call the runtime never reported on is not marked failed in a turn that completed', () => {
+		const turn = new NativeCliTurn(URI.parse('ahp-chat:/dangling'), 'turn', 'prompt', undefined, () => { });
+		turn.tool('call', 'read');
+		turn.finish(TurnState.Complete);
+		assert.deepStrictEqual(turn.turn.responseParts.map(part => part.kind === ResponsePartKind.ToolCall && part.toolCall.status === ToolCallStatus.Completed ? part.toolCall.success : part.kind), [true]);
 	});
 
 	test('preserves a UTF-8 code point split across protocol chunks', async () => {

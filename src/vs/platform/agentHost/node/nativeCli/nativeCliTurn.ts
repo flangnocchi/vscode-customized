@@ -24,6 +24,8 @@ export class NativeCliTurn {
 	private readonly started = Date.now();
 	private readonly parts = new Map<string, MarkdownResponsePart | ReasoningResponsePart>();
 	private readonly tools = new Map<string, ToolCallResponsePart>();
+	/** What each tool call last told clients: its input, and whether it ever asked for a decision. */
+	private readonly announced = new Map<string, { readonly input: string | undefined; readonly confirmation: boolean }>();
 	private readonly events = new Set<string>();
 	private readonly streamedParts = new Map<string, string>();
 	private ended = false;
@@ -55,7 +57,12 @@ export class NativeCliTurn {
 		this.action({ type: reasoning ? ActionType.ChatReasoning : ActionType.ChatDelta, turnId: this.turn.id, partId: part.id, content: delta });
 	}
 
-	/** With `confirmation`, the call waits for a decision. An absent `input` keeps what the tool call already showed. */
+	/**
+	 * With `confirmation`, the call waits for a decision. An absent `input` keeps what the tool call already showed.
+	 * A native runtime repeats a call's state as it changes, so an update that adds nothing is not announced again.
+	 * Once a call has asked for a decision, no update announces it as running: that would withdraw the question
+	 * while the runtime still waits for the answer, or replace the answer the user gave.
+	 */
 	tool(id: string, name: string, input?: unknown, confirmation = false, confirmationTitle?: string): void {
 		if (this.ended) { return; }
 		const toolCallId = this.toolId(id);
@@ -65,7 +72,11 @@ export class NativeCliTurn {
 			this.turn.responseParts.push(part);
 			this.action({ type: ActionType.ChatToolCallStart, turnId: this.turn.id, toolCallId, toolName: name, displayName: name });
 		}
-		this.action({ type: ActionType.ChatToolCallReady, turnId: this.turn.id, toolCallId, invocationMessage: name, toolInput: input === undefined ? undefined : JSON.stringify(input), ...(confirmation ? (confirmationTitle ? { confirmationTitle } : {}) : { confirmed: ToolCallConfirmationReason.NotNeeded }) });
+		const toolInput = input === undefined ? undefined : JSON.stringify(input);
+		const previous = this.announced.get(id);
+		if (!confirmation && previous && (previous.confirmation || toolInput === undefined || toolInput === previous.input)) { return; }
+		this.announced.set(id, { input: toolInput ?? previous?.input, confirmation: confirmation || previous?.confirmation === true });
+		this.action({ type: ActionType.ChatToolCallReady, turnId: this.turn.id, toolCallId, invocationMessage: name, toolInput, ...(confirmation ? (confirmationTitle ? { confirmationTitle } : {}) : { confirmed: ToolCallConfirmationReason.NotNeeded }) });
 	}
 
 	toolResult(id: string, output: unknown, success: boolean): void {
@@ -146,7 +157,10 @@ export class NativeCliTurn {
 	finish(state: TurnState, error?: string): void {
 		if (this.ended) { return; }
 		for (const [id, part] of this.tools) {
-			if (part.toolCall.status !== ToolCallStatus.Completed) { this.toolResult(id, error ?? (state === TurnState.Cancelled ? localize('nativeCli.toolCancelled', "Cancelled") : ''), false); }
+			if (part.toolCall.status === ToolCallStatus.Completed) { continue; }
+			// A call the runtime never reported on cannot have failed in a turn that completed.
+			const completed = state === TurnState.Complete;
+			this.toolResult(id, completed ? '' : error ?? localize('nativeCli.toolCancelled', "Cancelled"), completed);
 		}
 		this.ended = true;
 		this.turn.state = state;
