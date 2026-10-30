@@ -9,11 +9,13 @@ import { isRuntimeManagedCustomization, readRuntimePlugins, readRuntimeToolInven
 
 suite('Runtime tool inventory metadata', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
-	const inventory: IRuntimeToolInventory = { provider: 'test', label: 'Test', state: 'ready', scope: 'chat', tools: [
-		{ name: 'Read', loading: 'eager', source: 'builtin' },
-		{ name: 'extension/tool', description: 'Shared tool', loading: 'deferred', source: 'vscode' },
-		{ name: 'mcp_tool', loading: 'binding', source: 'mcp', sourceName: 'Server' },
-	] };
+	const inventory: IRuntimeToolInventory = {
+		provider: 'test', label: 'Test', state: 'ready', scope: 'chat', tools: [
+			{ name: 'Read', loading: 'eager', source: 'builtin' },
+			{ name: 'extension/tool', description: 'Shared tool', loading: 'deferred', source: 'vscode' },
+			{ name: 'mcp_tool', loading: 'binding', source: 'mcp', sourceName: 'Server' },
+		]
+	};
 
 	test('retains all runtime-confirmed origins and distinguishes unknown from an empty registry', () => {
 		assert.deepStrictEqual([

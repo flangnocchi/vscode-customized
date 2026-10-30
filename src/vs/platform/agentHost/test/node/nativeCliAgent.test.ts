@@ -34,28 +34,28 @@ const send = value => process.stdout.write(JSON.stringify(value) + '\n');
 const event = (type, payload) => send({method:'session/event',params:{sessionId:session,eventId:String(++seq),type,payload}});
 const dsh = (type,data) => send({method:'session.event',params:{sessionId:session,event:{seq:++seq,type,data}}});
 const finish = (text, dialect) => {
- if (dialect === 'dsh') { dsh('assistant/message',{message:{content:[{type:'text',text}]}}); dsh('turn/end',{reason:{kind:'end-turn'}}); done=true; if(waiter)send({id:waiter,result:{}}); }
- else { event('part.delta',{partId:'answer',field:'text',delta:text}); event('part.upserted',{part:{partId:'answer',type:'text',text}}); event('turn.completed',{response:text,resultType:'success'}); }
+	if (dialect === 'dsh') { dsh('assistant/message',{message:{content:[{type:'text',text}]}}); dsh('turn/end',{reason:{kind:'end-turn'}}); done=true; if(waiter)send({id:waiter,result:{}}); }
+	else { event('part.delta',{partId:'answer',field:'text',delta:text}); event('part.upserted',{part:{partId:'answer',type:'text',text}}); event('turn.completed',{response:text,resultType:'success'}); }
 };
 readline.createInterface({input:process.stdin}).on('line',line=>{
- const m=JSON.parse(line),p=m.params||{};
- if(!m.method) { if(m.id==='preferences'){send({id:creation,result:{settings:{model:{available:[{ref:{providerId:'fixture',modelId:'one'},label:'Fixture Model',reasoning:{levels:[{value:'off',label:'Off'}],defaultLevel:'off'}}]}}}});return;}finish(JSON.stringify(m.result),'dsh');return; }
- switch(m.method){
- case 'initialize':setTimeout(()=>send({id:m.id,result:{serverInfo:{name:'fixture'}}}),10);break;
- case 'runtime/capabilities':send({id:m.id,result:{historyFirst:true}});break;
- case 'session/create':case 'session/resume':case 'session/working-directory/get':
-  session=p.sessionId;restored=m.method==='session/resume';
-	if(process.env.NATIVE_FIXTURE_STORE&&restored&&!require('fs').existsSync(require('path').join(process.env.NATIVE_FIXTURE_STORE,session))){send({id:m.id,error:{message:'Session not found: '+session}});break;}
-	if(!m.jsonrpc){creation=m.id;send({id:'preferences',method:'session/requestRuntimePreferences',params:{sessionId:session,scope:'runtime-materialization'}});break;}send({id:m.id,result:{settings:{model:{available:[{ref:{providerId:'fixture',modelId:'one'},label:'Fixture Model'}]}}}});break;
- case 'session/subscribe':send({id:m.id,result:{}});break;
- case 'session/prompt':case 'session/send': {
-	  done=false;waiter=undefined;const dialect=m.method==='session/prompt'?'dsh':'zcode';
-	if(process.env.NATIVE_FIXTURE_STORE)require('fs').writeFileSync(require('path').join(process.env.NATIVE_FIXTURE_STORE,session),'');
-	  if(dialect==='dsh'&&!Array.isArray(p.contentBlocks)){send({id:m.id,error:{message:'contentBlocks required'}});break;}
-	  const prompt=dialect==='dsh'?p.contentBlocks.map(b=>b.text||'').join(''):p.content;
-  send({id:m.id,result:dialect==='dsh'?{messageId:'message'}:{accepted:true}});
-	  if(prompt==='crash'){process.exit(2);break;}
-	  if(prompt==='hold'){if(dialect==='dsh')dsh('assistant/message',{message:{content:[{type:'text',text:'waiting'}]}});else event('part.delta',{partId:'answer',field:'text',delta:'waiting'});break;}
+	const m=JSON.parse(line),p=m.params||{};
+	if(!m.method) { if(m.id==='preferences'){send({id:creation,result:{settings:{model:{available:[{ref:{providerId:'fixture',modelId:'one'},label:'Fixture Model',reasoning:{levels:[{value:'off',label:'Off'}],defaultLevel:'off'}}]}}}});return;}finish(JSON.stringify(m.result),'dsh');return; }
+	switch(m.method){
+	case 'initialize':setTimeout(()=>send({id:m.id,result:{serverInfo:{name:'fixture'}}}),10);break;
+	case 'runtime/capabilities':send({id:m.id,result:{historyFirst:true}});break;
+	case 'session/create':case 'session/resume':case 'session/working-directory/get':
+		session=p.sessionId;restored=m.method==='session/resume';
+		if(process.env.NATIVE_FIXTURE_STORE&&restored&&!require('fs').existsSync(require('path').join(process.env.NATIVE_FIXTURE_STORE,session))){send({id:m.id,error:{message:'Session not found: '+session}});break;}
+		if(!m.jsonrpc){creation=m.id;send({id:'preferences',method:'session/requestRuntimePreferences',params:{sessionId:session,scope:'runtime-materialization'}});break;}send({id:m.id,result:{settings:{model:{available:[{ref:{providerId:'fixture',modelId:'one'},label:'Fixture Model'}]}}}});break;
+	case 'session/subscribe':send({id:m.id,result:{}});break;
+	case 'session/prompt':case 'session/send': {
+		done=false;waiter=undefined;const dialect=m.method==='session/prompt'?'dsh':'zcode';
+		if(process.env.NATIVE_FIXTURE_STORE)require('fs').writeFileSync(require('path').join(process.env.NATIVE_FIXTURE_STORE,session),'');
+		if(dialect==='dsh'&&!Array.isArray(p.contentBlocks)){send({id:m.id,error:{message:'contentBlocks required'}});break;}
+		const prompt=dialect==='dsh'?p.contentBlocks.map(b=>b.text||'').join(''):p.content;
+		send({id:m.id,result:dialect==='dsh'?{messageId:'message'}:{accepted:true}});
+		if(prompt==='crash'){process.exit(2);break;}
+		if(prompt==='hold'){if(dialect==='dsh')dsh('assistant/message',{message:{content:[{type:'text',text:'waiting'}]}});else event('part.delta',{partId:'answer',field:'text',delta:'waiting'});break;}
 		if(prompt.startsWith('edit:')){
 			const file=prompt.slice(5),call='call-edit',fs=require('fs'),name=dialect==='dsh'?'write':'Write',input={file_path:file,content:'after'};
 			if(dialect==='dsh')dsh('assistant/message',{message:{content:[{type:'tool-call',id:call,name,arguments:JSON.stringify(input)}]}});
@@ -66,13 +66,13 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 				else event('tool.updated',{kind:'result',toolCallId:call,result:{success:true,content:'ok'}});
 				finish('edited',dialect);
 			},50);break;}
-	  if(prompt==='permission'){send({id:'permission',method:'approval/request',params:{sessionId:session,callId:'call-1',toolName:'write',reason:'Write /workspace/a.txt'}});break;}
-  if(dialect==='dsh'&&prompt.startsWith('/output-style')){dsh('command/done',{commandId:'style',kind:prompt.endsWith('missing')?'error':'success',text:prompt.endsWith('missing')?'Unknown output style: missing':'Session style: concise'});dsh('turn/end',{reason:{kind:'completed'}});done=true;if(waiter)send({id:waiter,result:{}});break;}
-  finish('pid='+process.pid+';resumed='+restored,dialect);break;
- }
- case 'session/wait':if(done)send({id:m.id,result:{}});else waiter=m.id;break;
- default:send({id:m.id,error:{message:'unknown method'}});
- }
+		if(prompt==='permission'){send({id:'permission',method:'approval/request',params:{sessionId:session,callId:'call-1',toolName:'write',reason:'Write /workspace/a.txt'}});break;}
+		if(dialect==='dsh'&&prompt.startsWith('/output-style')){dsh('command/done',{commandId:'style',kind:prompt.endsWith('missing')?'error':'success',text:prompt.endsWith('missing')?'Unknown output style: missing':'Session style: concise'});dsh('turn/end',{reason:{kind:'completed'}});done=true;if(waiter)send({id:waiter,result:{}});break;}
+		finish('pid='+process.pid+';resumed='+restored,dialect);break;
+	}
+	case 'session/wait':if(done)send({id:m.id,result:{}});else waiter=m.id;break;
+	default:send({id:m.id,error:{message:'unknown method'}});
+	}
 });
 `;
 

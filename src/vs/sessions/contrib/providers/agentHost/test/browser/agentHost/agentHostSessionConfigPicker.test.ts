@@ -443,9 +443,11 @@ suite('Agent Host Session Config Picker', () => {
 				services.provider.isNew = isNew;
 				services.workspaceObs.set(undefined, undefined);
 				services.provider.config = {
-					schema: { type: 'object', properties: {
-						[property]: { type: 'string', title: 'Permissions', enum: ['read', 'write'], enumLabels: ['Read Only', 'Workspace Access'], default: 'write', sessionMutable: true, chatMutable: true },
-					} },
+					schema: {
+						type: 'object', properties: {
+							[property]: { type: 'string', title: 'Permissions', enum: ['read', 'write'], enumLabels: ['Read Only', 'Workspace Access'], default: 'write', sessionMutable: true, chatMutable: true },
+						}
+					},
 					values: { [property]: 'write' },
 				};
 				const factories = new Map<MenuId, IActionViewItemFactory>();
@@ -491,9 +493,11 @@ suite('Agent Host Session Config Picker', () => {
 				const services = setupServices(store, { autoApprovePolicyDisabled: policyDisabled });
 				const property = `${providerId}.permissionMode`;
 				services.provider.config = {
-					schema: { type: 'object', properties: {
-						[property]: { type: 'string', title: 'Permissions', enum: ['safe', fullAccess], enumLabels: ['Safe', 'Full Access'], default: 'safe', sessionMutable: true, chatMutable: true },
-					} },
+					schema: {
+						type: 'object', properties: {
+							[property]: { type: 'string', title: 'Permissions', enum: ['safe', fullAccess], enumLabels: ['Safe', 'Full Access'], default: 'safe', sessionMutable: true, chatMutable: true },
+						}
+					},
 					values: { [property]: 'safe' },
 				};
 				const { container } = renderPicker(store, services);

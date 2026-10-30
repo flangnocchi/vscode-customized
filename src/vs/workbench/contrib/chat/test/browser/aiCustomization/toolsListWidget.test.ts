@@ -12,11 +12,13 @@ suite('toolsListWidget', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('runtime sets retain confirmed VS Code and MCP tools and do not substitute Copilot tools', () => {
-		const sets = createRuntimeToolSets({ provider: 'test', label: 'Test', state: 'ready', scope: 'chat', tools: [
-			{ name: 'NativeRead', loading: 'eager', source: 'builtin' },
-			{ name: 'SharedRead', loading: 'eager', source: 'vscode' },
-			{ name: 'RemoteSearch', loading: 'deferred', source: 'mcp' },
-		] });
+		const sets = createRuntimeToolSets({
+			provider: 'test', label: 'Test', state: 'ready', scope: 'chat', tools: [
+				{ name: 'NativeRead', loading: 'eager', source: 'builtin' },
+				{ name: 'SharedRead', loading: 'eager', source: 'vscode' },
+				{ name: 'RemoteSearch', loading: 'deferred', source: 'mcp' },
+			]
+		});
 		assert.deepStrictEqual({ names: sets.flatMap(set => [...set.getTools()].map(tool => tool.displayName)), nativeIds: sets.every(set => set.id.startsWith('runtime:')), unknown: createRuntimeToolSets(undefined) }, { names: ['NativeRead', 'SharedRead', 'RemoteSearch'], nativeIds: true, unknown: [] });
 	});
 

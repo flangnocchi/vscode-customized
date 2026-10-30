@@ -41,9 +41,9 @@ suite('Native CLI runtime observation', () => {
 			const source = String.raw`
 const readline=require('readline');const Methods={runtimeCapabilities:'runtime/capabilities'};const Schema={parse:v=>v,object:v=>v};const Id={};const Modes={options:['plan','build']};const ModeRequest=Schema.object({sessionId:Id,mode:Modes,expectedRevision:Id});
 let mode='build';const runtime={getMode:()=>mode,setExecutionState:async state=>{mode=state.mode},config:{modelSelection:{modelId:'default'}},registeredMcpToolNames:['mcp_search'],
- getSessionModelSelection:()=>undefined,modelFactory:({selection})=>selection,
- getTools:model=>[{name:model.modelId,description:'Selected model tool'},{name:'mcp_search',deferLoading:true}],
- getAgentDefinitions:()=>({activeAgents:[{name:'Explore'}]}),contextSourceSnapshot:{userInstructions:{sources:[{filePath:'/workspace/AGENTS.md',content:'must not cross the boundary'}]}},
+	getSessionModelSelection:()=>undefined,modelFactory:({selection})=>selection,
+	getTools:model=>[{name:model.modelId,description:'Selected model tool'},{name:'mcp_search',deferLoading:true}],
+	getAgentDefinitions:()=>({activeAgents:[{name:'Explore'}]}),contextSourceSnapshot:{userInstructions:{sources:[{filePath:'/workspace/AGENTS.md',content:'must not cross the boundary'}]}},
 };
 class Server{context={sessions:new Map([['chat',{app:{runtime,getSkillCatalog:async()=>({skills:[]})}}]])};${dispatcher.code}}
 const server=new Server();readline.createInterface({input:process.stdin}).on('line',async line=>{const m=JSON.parse(line);try{process.stdout.write(JSON.stringify({id:m.id,result:await server.${dispatcher.method}(m)})+'\n')}catch{process.stdout.write(JSON.stringify({id:m.id,error:{message:'Unsupported'}})+'\n')}});

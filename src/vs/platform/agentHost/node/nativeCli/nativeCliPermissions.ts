@@ -57,12 +57,16 @@ export function resolveNativeCliPermissionConfig(id: NativeCliAgentId, permissio
 	const selected = config?.[key] ?? permissions.defaultMode;
 	if (!permissions.options.some(option => option.id === selected)) { throw new Error(localize('nativeCli.permissions.invalid', "The native runtime does not offer this permission mode.")); }
 	return {
-		schema: { type: 'object', properties: { [key]: {
-			type: 'string', title: localize('nativeCli.permissions.title', "Permissions"),
-			description: localize('nativeCli.permissions.description', "Native permissions for this chat. Changes apply to the next turn."),
-			enum: permissions.options.map(option => option.id), enumLabels: permissions.options.map(option => modeLabel(id, option.id, option.name)),
-			enumDescriptions: permissions.options.map(option => option.description ?? modeLabel(id, option.id, option.name)),
-			default: permissions.defaultMode, sessionMutable: true, chatMutable: true,
-		} } }, values: { [key]: selected },
+		schema: {
+			type: 'object', properties: {
+				[key]: {
+					type: 'string', title: localize('nativeCli.permissions.title', "Permissions"),
+					description: localize('nativeCli.permissions.description', "Native permissions for this chat. Changes apply to the next turn."),
+					enum: permissions.options.map(option => option.id), enumLabels: permissions.options.map(option => modeLabel(id, option.id, option.name)),
+					enumDescriptions: permissions.options.map(option => option.description ?? modeLabel(id, option.id, option.name)),
+					default: permissions.defaultMode, sessionMutable: true, chatMutable: true,
+				}
+			}
+		}, values: { [key]: selected },
 	};
 }

@@ -25,11 +25,13 @@ suite('Native CLI customizations', () => {
 
 	test('preserves native winners, canonical paths and invocation flags without scanning another harness', () => {
 		const path = join(tmpdir(), 'shared-skill', 'SKILL.md');
-		const result = nativeCliCustomizations('dsh', { complete: true, skills: [
-			{ name: 'native-winner', path, description: 'Native description', invocation: { modelInvocable: false, userInvocable: false } },
-			{ name: 'same-file', path },
-			{ name: 'disabled', path: join(tmpdir(), 'disabled.md'), enabled: false },
-		], instructions: [{ absolutePath: join(tmpdir(), 'AGENTS.md') }] });
+		const result = nativeCliCustomizations('dsh', {
+			complete: true, skills: [
+				{ name: 'native-winner', path, description: 'Native description', invocation: { modelInvocable: false, userInvocable: false } },
+				{ name: 'same-file', path },
+				{ name: 'disabled', path: join(tmpdir(), 'disabled.md'), enabled: false },
+			], instructions: [{ absolutePath: join(tmpdir(), 'AGENTS.md') }]
+		});
 		assert.deepStrictEqual(result.map(directory => ({
 			writable: directory.type === CustomizationType.Directory && directory.writable,
 			children: directory.type === CustomizationType.Directory ? directory.children?.map(child => [child.name, child.uri, child.type === CustomizationType.Skill ? child.disableModelInvocation : undefined, child.type === CustomizationType.Skill ? child.disableUserInvocation : undefined]) : [],
@@ -66,10 +68,12 @@ suite('Native CLI customizations', () => {
 	});
 
 	test('includes only enabled, runnable native plugin hook definitions', () => {
-		const result = nativeCliCustomizations('zcode', { plugins: [
-			{ name: 'active', enabled: true, hookDetails: [{ sourcePath: '/plugins/active/hooks.json', runnable: true, command: 'private' }, { sourcePath: '/plugins/active/blocked.json', runnable: false }] },
-			{ name: 'disabled', enabled: false, hookDetails: [{ sourcePath: '/plugins/disabled/hooks.json', runnable: true }] },
-		] });
+		const result = nativeCliCustomizations('zcode', {
+			plugins: [
+				{ name: 'active', enabled: true, hookDetails: [{ sourcePath: '/plugins/active/hooks.json', runnable: true, command: 'private' }, { sourcePath: '/plugins/active/blocked.json', runnable: false }] },
+				{ name: 'disabled', enabled: false, hookDetails: [{ sourcePath: '/plugins/disabled/hooks.json', runnable: true }] },
+			]
+		});
 		assert.deepStrictEqual(result.flatMap(c => c.type === CustomizationType.Directory ? c.children ?? [] : []).map(c => [c.type, c.uri]), [[CustomizationType.Hook, URI.file('/plugins/active/hooks.json').toString()]]);
 	});
 
@@ -84,12 +88,12 @@ fs.writeFileSync(process.env.TEST_NATIVE_AUDIT,JSON.stringify({patch,plugin,cwd:
 process.stdin.resume();
 process.stdin.on('data',()=>{throw new Error('Discovery must not send a session request')});
 import(url.pathToFileURL(plugin).href).then(module=>module.apply({
- get(name){if(name==='loader')return{await:async()=>{}};if(name==='skills')return{snapshot:async({cwd})=>({complete:true,skills:[{name:'native-skill',path:path.join(cwd,'native.md')}]})};},
- loader:{entries:()=>[
-  {disabled:false,fiber:{state:2},options:{name:plugin},moduleNamespace:module},
-  {disabled:true,fiber:{},options:{name:'@deepseek-ai/dsh-agent-instructions'},moduleNamespace:{discoverBaselineInstructionFiles:()=>{throw new Error('Disabled plugin must not be read')}}},
-  {disabled:false,fiber:{},options:{name:'@deepseek-ai/dsh-agent-instructions',config:{instructionFileCandidates:['CUSTOM.md']}},moduleNamespace:{discoverBaselineInstructionFiles:async options=>[{absolutePath:path.join(options.cwd,options.instructionFileCandidates[0])}]}}
- ]}
+	get(name){if(name==='loader')return{await:async()=>{}};if(name==='skills')return{snapshot:async({cwd})=>({complete:true,skills:[{name:'native-skill',path:path.join(cwd,'native.md')}]})};},
+	loader:{entries:()=>[
+		{disabled:false,fiber:{state:2},options:{name:plugin},moduleNamespace:module},
+		{disabled:true,fiber:{},options:{name:'@deepseek-ai/dsh-agent-instructions'},moduleNamespace:{discoverBaselineInstructionFiles:()=>{throw new Error('Disabled plugin must not be read')}}},
+		{disabled:false,fiber:{},options:{name:'@deepseek-ai/dsh-agent-instructions',config:{instructionFileCandidates:['CUSTOM.md']}},moduleNamespace:{discoverBaselineInstructionFiles:async options=>[{absolutePath:path.join(options.cwd,options.instructionFileCandidates[0])}]}}
+	]}
 }));
 `;
 		try {
@@ -107,10 +111,10 @@ import(url.pathToFileURL(plugin).href).then(module=>module.apply({
 		const fixture = String.raw`
 const readline=require('readline'),path=require('path');
 readline.createInterface({input:process.stdin}).on('line',line=>{
- const m=JSON.parse(line);
- if(m.method==='runtime/capabilities')return process.stdout.write(JSON.stringify({id:m.id,result:{}})+'\n');
- if(m.method!=='skills/referenceCatalog')throw new Error('Unexpected session operation');
- process.stdout.write(JSON.stringify({id:m.id,result:{authority:'workspace',skills:[{name:'zcode-skill',path:path.join(m.params.workspace.workspacePath,'SKILL.md'),enabled:true}]}})+'\n');
+	const m=JSON.parse(line);
+	if(m.method==='runtime/capabilities')return process.stdout.write(JSON.stringify({id:m.id,result:{}})+'\n');
+	if(m.method!=='skills/referenceCatalog')throw new Error('Unexpected session operation');
+	process.stdout.write(JSON.stringify({id:m.id,result:{authority:'workspace',skills:[{name:'zcode-skill',path:path.join(m.params.workspace.workspacePath,'SKILL.md'),enabled:true}]}})+'\n');
 });
 `;
 		const result = await discoverNativeCliCustomizations('zcode', { executable: process.execPath, args: ['-e', fixture], cwd: tmpdir(), env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, jsonrpc: false }, new AbortController().signal);

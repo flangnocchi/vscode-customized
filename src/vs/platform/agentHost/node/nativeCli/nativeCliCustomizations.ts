@@ -95,7 +95,8 @@ export function nativeCliCustomizations(id: NativeCliAgentId, snapshot: NativeRe
 	for (const [name, raw] of Object.entries(record(snapshot.mcpServers))) {
 		const server = record(raw);
 		const uri = URI.from({ scheme: AGENT_BUILTIN_CUSTOMIZATION_SCHEME, authority: id, path: `/mcp/${encodeURIComponent(name)}` }).toString();
-		servers.push({ type: CustomizationType.McpServer, id: customizationId(uri), uri, name,
+		servers.push({
+			type: CustomizationType.McpServer, id: customizationId(uri), uri, name,
 			...(server.status === 'disabled' ? { enablement: [{ kind: CustomizationEnablementKind.Global, enabled: false }] } : {}),
 			state: server.status === 'connected' ? { kind: McpServerStatus.Ready } : server.status === 'connecting' ? { kind: McpServerStatus.Starting } : server.status === 'error' ? { kind: McpServerStatus.Error, error: { errorType: 'nativeMcpUnavailable', message: localize('nativeCli.mcpUnavailable', "The native runtime has not connected this server.") } } : { kind: McpServerStatus.Stopped },
 			_meta: withMcpServerSourceMeta(withRuntimeManagedCustomization(undefined), 'managed'),
