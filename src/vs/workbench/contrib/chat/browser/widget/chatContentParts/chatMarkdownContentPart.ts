@@ -13,7 +13,7 @@ import { findLast } from '../../../../../../base/common/arraysFind.js';
 import { CancellationTokenSource } from '../../../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../../../base/common/codicons.js';
 import { isCancellationError } from '../../../../../../base/common/errors.js';
-import { MarkdownString } from '../../../../../../base/common/htmlContent.js';
+import { IMarkdownString, MarkdownString } from '../../../../../../base/common/htmlContent.js';
 import { Lazy } from '../../../../../../base/common/lazy.js';
 import { Disposable, DisposableStore, dispose, IDisposable, MutableDisposable } from '../../../../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../../../../base/common/event.js';
@@ -48,6 +48,7 @@ import { AccessibilityWorkbenchSettingId } from '../../../../accessibility/brows
 import { IAiEditTelemetryService } from '../../../../editTelemetry/browser/telemetry/aiEditTelemetry/aiEditTelemetryService.js';
 import { MarkedKatexSupport } from '../../../../markdown/browser/markedKatexSupport.js';
 import { extractCodeblockUrisFromText, extractVulnerabilitiesFromText } from '../../../common/widget/annotations.js';
+import { linkifyInlineCodeFilePaths } from '../../../common/widget/inlineCodeFileLinks.js';
 import { IEditSessionEntryDiff } from '../../../common/editing/chatEditingService.js';
 import { IChatProgressRenderableResponseContent } from '../../../common/model/chatModel.js';
 import { IChatContentInlineReference, IChatMarkdownContent, IChatService, IChatUndoStop } from '../../../common/chatService/chatService.js';
@@ -93,6 +94,11 @@ export interface IChatMarkdownContentPartOptions {
 
 interface IMarkdownPartCodeBlockInfo extends IChatCodeBlockInfo {
 	isStreamingEdit: boolean;
+}
+
+function withLinkifiedInlineCodeFilePaths(content: IMarkdownString): IMarkdownString {
+	const value = linkifyInlineCodeFilePaths(content.value);
+	return value === content.value ? content : { ...content, value };
 }
 
 export class ChatMarkdownContentPart extends Disposable implements IChatContentPart {
@@ -259,7 +265,12 @@ export class ChatMarkdownContentPart extends Disposable implements IChatContentP
 					return mapped;
 				}
 				: configuredUriTransformer;
-			const result = store.add(renderer.render(this.markdown.content, {
+			// Agent Host harnesses write a file as plain inline code, where Local chat gets a reference to it.
+			// Show the same file widget for both.
+			const content = isResponseVM(element) && isAgentHostSessionResource(element.sessionResource)
+				? withLinkifiedInlineCodeFilePaths(this.markdown.content)
+				: this.markdown.content;
+			const result = store.add(renderer.render(content, {
 				fillInIncompleteTokens,
 				codeBlockRendererSync: (languageId, text, raw) => {
 					const isCodeBlockComplete = !isResponseVM(context.element) || context.element.isComplete || !raw || codeblockHasClosingBackticks(raw);

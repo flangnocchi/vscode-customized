@@ -68,6 +68,8 @@ export interface IMarkdownRewriteContext {
 export interface IMarkdownRewriter {
 	/** Returns replacement source for a link or image, or `undefined` to keep it verbatim. */
 	rewriteLink(token: marked.Tokens.Link | marked.Tokens.Image): string | undefined;
+	/** Returns replacement source for an inline code span, or `undefined` to keep it verbatim. */
+	rewriteCodeSpan?(token: marked.Tokens.Codespan): string | undefined;
 	/** Produces additional edits once traversal has mapped the document. */
 	additionalEdits?(markdown: string, context: IMarkdownRewriteContext): readonly IMarkdownEdit[];
 }
@@ -81,12 +83,12 @@ export interface IMarkdownRewriter {
  * Known limitation: a link label spanning lines inside a blockquote or list has its block
  * prefixes stripped from `raw`, so the offset lookup fails and the link is left alone.
  */
-function collectEdits(tokens: readonly marked.Token[], markdown: string, cursor: number, rewriter: IMarkdownRewriter, edits: IMarkdownEdit[], codeRanges: { start: number; end: number }[], unlocatable: (marked.Tokens.Link | marked.Tokens.Image)[]): number {
+function collectEdits(tokens: readonly marked.Token[], markdown: string, cursor: number, rewriter: IMarkdownRewriter, edits: IMarkdownEdit[], codeRanges: { start: number; end: number }[], unlocatable: (marked.Tokens.Link | marked.Tokens.Image)[], insideLink = false): number {
 	for (const token of tokens) {
 		if (!isOpaque(token)) {
 			const children = childrenOf(token);
 			if (children.length) {
-				cursor = collectEdits(children, markdown, cursor, rewriter, edits, codeRanges, unlocatable);
+				cursor = collectEdits(children, markdown, cursor, rewriter, edits, codeRanges, unlocatable, insideLink);
 				continue;
 			}
 		}
@@ -108,6 +110,11 @@ function collectEdits(tokens: readonly marked.Token[], markdown: string, cursor:
 
 		if (token.type === 'code' || token.type === 'codespan') {
 			codeRanges.push({ start, end });
+			// A code span in a link's text is part of that link, which cannot hold another.
+			const replacement = token.type === 'codespan' && !insideLink ? rewriter.rewriteCodeSpan?.(token as marked.Tokens.Codespan) : undefined;
+			if (replacement !== undefined) {
+				edits.push({ start, end, replacement });
+			}
 		} else if (token.type === 'link' || token.type === 'image') {
 			const replacement = rewriter.rewriteLink(token as marked.Tokens.Link | marked.Tokens.Image);
 			if (replacement !== undefined) {
@@ -115,7 +122,7 @@ function collectEdits(tokens: readonly marked.Token[], markdown: string, cursor:
 			} else {
 				// The token survives as written, so anything nested inside it — an image with
 				// its own target inside a link, say — still has to be visited.
-				collectEdits(childrenOf(token), markdown, start, rewriter, edits, codeRanges, unlocatable);
+				collectEdits(childrenOf(token), markdown, start, rewriter, edits, codeRanges, unlocatable, true);
 			}
 		}
 	}

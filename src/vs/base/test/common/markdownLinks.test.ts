@@ -31,6 +31,13 @@ suite('rewriteMarkdownLinks', () => {
 		assert.strictEqual(rewriteMarkdownLinks(markdown, { rewriteLink: () => undefined }), markdown);
 	});
 
+	test('rewrites inline code spans on request, and never the contents of code blocks or links', () => {
+		const rewriter = { rewriteLink: () => undefined, rewriteCodeSpan: (token: { text: string }) => token.text === 'a' ? 'SPAN' : undefined };
+		assert.strictEqual(
+			rewriteMarkdownLinks('`a` and `b`, [`a`](./x.txt)\n\n```\n`a`\n```\n\n- `a`', rewriter),
+			'SPAN and `b`, [`a`](./x.txt)\n\n```\n`a`\n```\n\n- SPAN');
+	});
+
 	test('returns the source unchanged when it cannot be parsed as markdown', () => {
 		assert.strictEqual(rewriteMarkdownLinks('', rewriteToMarker), '');
 	});
