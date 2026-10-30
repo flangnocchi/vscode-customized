@@ -513,6 +513,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 				if (entry.process === connection) { entry.process = undefined; }
 				await connection.shutdown();
 				store.dispose();
+				if (entry.processStore === store) { entry.processStore = undefined; }
 				throw error;
 			}
 		})().finally(() => { entry.starting = undefined; });
@@ -737,7 +738,10 @@ export class NativeCliAgent extends Disposable implements IAgent {
 						const skills = record(await connection.request('skills/referenceCatalog', { workspace: { workspacePath: cwd, workspaceKey: cwd } }, 15_000));
 						snapshot = { ...skills, scope: 'chat', tools: [], toolsState: 'unavailable' };
 					}
-					if (this.id === 'zcode') { snapshot.plugins = record(await connection.request('plugins/list', { workspace: { workspacePath: cwd, workspaceKey: cwd } }, 15_000)).plugins; }
+					if (this.id === 'zcode') {
+						// The plugin list only adds to the inventory. Without it the skills, tools and modes are still right.
+						try { snapshot.plugins = record(await connection.request('plugins/list', { workspace: { workspacePath: cwd, workspaceKey: cwd } }, 15_000)).plugins; } catch { /* Left out. */ }
+					}
 					if (entry.process !== connection || entry.stopping || this.closing) { throw new CancellationError(); }
 					return nativeCliCustomizations(this.id, snapshot);
 				})()

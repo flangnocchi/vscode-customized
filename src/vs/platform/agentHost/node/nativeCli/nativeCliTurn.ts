@@ -18,6 +18,18 @@ function nativeText(value: unknown): string {
 	return typeof object.text === 'string' ? object.text : typeof object.content === 'string' ? object.content : '';
 }
 
+/**
+ * The JSON text of a tool call's input. DSH reports a call's `arguments` as a JSON string, which must not be encoded
+ * a second time, or the client shows an escaped string instead of the arguments.
+ */
+function toolInputText(input: unknown): string | undefined {
+	if (input === undefined) { return undefined; }
+	if (typeof input === 'string') {
+		try { JSON.parse(input); return input; } catch { /* Not JSON: it is shown as the text it is. */ }
+	}
+	return JSON.stringify(input);
+}
+
 /** Converts one native turn into the shared live actions and the identical saved transcript. */
 export class NativeCliTurn {
 	readonly turn: Turn;
@@ -72,7 +84,7 @@ export class NativeCliTurn {
 			this.turn.responseParts.push(part);
 			this.action({ type: ActionType.ChatToolCallStart, turnId: this.turn.id, toolCallId, toolName: name, displayName: name });
 		}
-		const toolInput = input === undefined ? undefined : JSON.stringify(input);
+		const toolInput = toolInputText(input);
 		const previous = this.announced.get(id);
 		if (!confirmation && previous && (previous.confirmation || toolInput === undefined || toolInput === previous.input)) { return; }
 		this.announced.set(id, { input: toolInput ?? previous?.input, confirmation: confirmation || previous?.confirmation === true });
@@ -122,6 +134,9 @@ export class NativeCliTurn {
 				const id = String(data.partId ?? key);
 				this.streamedParts.set(key, id);
 				this.text(id, String(data.delta ?? ''), reasoning);
+			} else if (data.kind === 'tool_call' && typeof data.toolCallId === 'string') {
+				// The scheduled event omits the input of most calls, so this is where a call first shows what it was given.
+				this.tool(data.toolCallId, String(data.toolName ?? data.toolCallId), data.input);
 			}
 		} else if (event.type === 'part.delta') {
 			if (!this.streamedParts.size && (data.field === 'text' || data.field === 'reasoning')) { this.text(String(data.partId), String(data.delta ?? ''), data.field === 'reasoning'); }

@@ -163,7 +163,9 @@ async function readZcodeCustomizations(launch: INativeCliLaunch, signal: AbortSi
 			let snapshot: NativeRecord;
 			try { snapshot = record(await transport.request('vscode/runtimeInventory', { sessionId, waitForTools: true, ...(modelSelection ? { modelSelection } : {}) }, 15_000)); }
 			catch { snapshot = { ...skills, tools: [], toolsState: 'unavailable' }; }
-			const plugins = record(await transport.request('plugins/list', { workspace }, 15_000));
+			// The plugin list only adds to the inventory, so a runtime that cannot give it still reports the rest.
+			const plugins = record(await transport.request('plugins/list', { workspace }, 15_000).catch(() => undefined));
+			if (signal.aborted) { throw new CancellationError(); }
 			return { ...snapshot, scope: 'workspace', plugins: plugins.plugins };
 		} finally {
 			signal.removeEventListener('abort', abort);

@@ -295,6 +295,21 @@ suite('Native CLI agents', () => {
 		assert.deepStrictEqual(inputs, [undefined, '{"path":"a"}']);
 	});
 
+	test('dsh reports a tool call input as JSON text, which is not encoded a second time', () => {
+		const inputs: IToolCallReadyAction['toolInput'][] = [];
+		const turn = new NativeCliTurn(URI.parse('ahp-chat:/dsh-input'), 'turn', 'prompt', undefined, signal => { if (signal.kind === 'action' && signal.action.type === ActionType.ChatToolCallReady) { inputs.push(signal.action.toolInput); } });
+		turn.dsh({ seq: 1, type: 'assistant/message', data: { message: { content: [{ type: 'tool-call', id: 'call', name: 'bash', arguments: '{"command":"ls"}' }] } } });
+		assert.deepStrictEqual(inputs, ['{"command":"ls"}']);
+	});
+
+	test('zcode shows the input of a tool call from its model stream, since the scheduled event omits it', () => {
+		const inputs: IToolCallReadyAction['toolInput'][] = [];
+		const turn = new NativeCliTurn(URI.parse('ahp-chat:/zcode-input'), 'turn', 'prompt', undefined, signal => { if (signal.kind === 'action' && signal.action.type === ActionType.ChatToolCallReady) { inputs.push(signal.action.toolInput); } });
+		turn.zcode({ eventId: '1', type: 'model.streaming', payload: { kind: 'tool_call', toolCallId: 'call', toolName: 'Read', input: { file_path: '/a' } } });
+		turn.zcode({ eventId: '2', type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: 'Read', inputOmitted: true } });
+		assert.deepStrictEqual(inputs, ['{"file_path":"/a"}']);
+	});
+
 	test('a tool call the runtime never reported on is not marked failed in a turn that completed', () => {
 		const turn = new NativeCliTurn(URI.parse('ahp-chat:/dangling'), 'turn', 'prompt', undefined, () => { });
 		turn.tool('call', 'read');

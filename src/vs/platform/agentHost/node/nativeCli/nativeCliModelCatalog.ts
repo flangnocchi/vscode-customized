@@ -119,23 +119,32 @@ async function readDshCatalog(launch: INativeCliLaunch, signal: AbortSignal): Pr
 	let catalog = dshModelCatalog(stdout);
 	// Built-in names come from the installed SDK schema, rather than a second hardcoded model list.
 	if (!catalog.models.length || catalog.models.every(model => model.id.startsWith('deepseek-'))) {
-		const schema = record(JSON.parse((await run('--dump-config-schema')).stdout));
-		const entries = record(schema['x-cordis']).entries;
-		const builtin: NativeRecord[] = [];
-		for (const raw of Array.isArray(entries) ? entries : []) {
-			const entry = record(raw);
-			if (entry.name !== '@deepseek-ai/dsh-llm-deepseek-api-key' || typeof entry.configRef !== 'string') { continue; }
-			let definition: unknown = schema;
-			for (const part of entry.configRef.replace(/^#\//, '').split('/')) { definition = record(definition)[part]; }
-			const alternatives = record(definition).anyOf;
-			for (const option of Array.isArray(alternatives) ? alternatives : []) {
-				const defaults = record(record(record(option).properties).models).default;
-				if (Array.isArray(defaults)) { builtin.push(...defaults.map(record)); }
-			}
+		try {
+			catalog = await withBuiltinDshModels(stdout, run);
+		} catch (error) {
+			// The schema only adds names for built-in models. A catalog that was read without it is still usable.
+			if (!catalog.models.length || signal.aborted) { throw error; }
 		}
-		catalog = dshModelCatalog(stdout, builtin);
 	}
 	return catalog;
+}
+
+async function withBuiltinDshModels(stdout: string, run: (flag: string) => Promise<{ stdout: string }>): Promise<INativeCliModelCatalog> {
+	const schema = record(JSON.parse((await run('--dump-config-schema')).stdout));
+	const entries = record(schema['x-cordis']).entries;
+	const builtin: NativeRecord[] = [];
+	for (const raw of Array.isArray(entries) ? entries : []) {
+		const entry = record(raw);
+		if (entry.name !== '@deepseek-ai/dsh-llm-deepseek-api-key' || typeof entry.configRef !== 'string') { continue; }
+		let definition: unknown = schema;
+		for (const part of entry.configRef.replace(/^#\//, '').split('/')) { definition = record(definition)[part]; }
+		const alternatives = record(definition).anyOf;
+		for (const option of Array.isArray(alternatives) ? alternatives : []) {
+			const defaults = record(record(record(option).properties).models).default;
+			if (Array.isArray(defaults)) { builtin.push(...defaults.map(record)); }
+		}
+	}
+	return dshModelCatalog(stdout, builtin);
 }
 
 /** Catalog inspection uses a disposable native home, never a conversation in the user's history. */
