@@ -24,7 +24,6 @@ import { URI } from '../../../../../../base/common/uri.js';
 import { localize } from '../../../../../../nls.js';
 import { IAgentHostConnectionsService, IAgentHostSessionResolution } from '../../../../../../platform/agentHost/common/agentHostConnectionsService.js';
 import { AGENT_HOST_ACCEPT_CHANGES_OPERATION_ID, AGENT_HOST_DISCARD_CHANGES_OPERATION_ID } from '../../../../../../platform/agentHost/common/agentHostChangesetOperationService.js';
-import { isCopilotAgentHostProvider } from '../../../../../../platform/agentHost/common/agentHostSessionType.js';
 import { AGENT_HOST_SCHEME, toAgentHostUri } from '../../../../../../platform/agentHost/common/agentHostUri.js';
 import { branchChangesetLabel, ChangesetKind, resolveChangesetUriTemplate, resolveChatChangesetCatalogue, selectDefaultChangeset, sessionChangesetLabel, uncommittedChangesetLabel, type DefaultChangesetKind } from '../../../../../../platform/agentHost/common/changesetUri.js';
 import { affectsAgentHostProviderPreference, isLocalAgentHostProviderDisabledByPolicy } from '../../../../../../platform/agentHost/common/agentService.js';
@@ -680,7 +679,6 @@ export class AgentHostSessionInputPills extends Disposable {
 			?.find(changeset => changeset.changeKind === ChangesetKind.WorkingSet && !changeset.uriTemplate.includes('{')));
 		// Only inputs that can show the working set swap the Changes pill for it, so the Agents window keeps its pill.
 		const workingSetAvailable = derived(this, reader => this._widget.inputPart.supportsSessionWorkingSet
-			&& isCopilotAgentHostProvider(sessionState.read(reader)?.provider)
 			&& !subagentChat.read(reader));
 		const workingSetSupported = derived(this, reader => workingSetAvailable.read(reader) && workingSetConfigured.read(reader));
 		const workingSetEnabled = derived(this, reader => workingSetSupported.read(reader)

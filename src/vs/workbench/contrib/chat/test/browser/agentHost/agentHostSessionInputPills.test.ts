@@ -3013,7 +3013,7 @@ suite('AgentHostSessionInputPills', () => {
 
 	for (const provider of ['copilot', 'copilotcli', 'claude', 'codex', 'other', undefined]) {
 		for (const connectionAuthority of ['local', 'remote-test']) {
-			test(`only replaces the Changes pill for Copilot (${provider}, ${connectionAuthority})`, async () => {
+			test(`replaces the Changes pill for every harness, as for Local chat (${provider}, ${connectionAuthority})`, async () => {
 				const branchChanges = 'vendor-diff:/branch';
 				const sessionChanges = 'vendor-diff:/session';
 				const harness = createActivityPills(upcastPartial<SessionState>({
@@ -3037,17 +3037,16 @@ suite('AgentHostSessionInputPills', () => {
 					}],
 				}));
 				await harness.setWorkingSetEnabled(true);
-				const copilot = provider === 'copilot' || provider === 'copilotcli';
 				assert.deepStrictEqual({
 					pill: !!harness.persistentContent.querySelector('.chat-changes-pill-button'),
 					workingSet: harness.workingSetChanges()?.length,
 					registrations: harness.workingSetRegistrations(),
 					changeset: harness.connection.requested.filter(request => request.kind === StateComponents.Changeset).at(-1)?.resource.toString(),
 				}, {
-					pill: !copilot,
-					workingSet: copilot ? 1 : undefined,
-					registrations: copilot ? 1 : 0,
-					changeset: copilot ? sessionChanges : branchChanges,
+					pill: false,
+					workingSet: 1,
+					registrations: 1,
+					changeset: sessionChanges,
 				});
 			});
 		}
