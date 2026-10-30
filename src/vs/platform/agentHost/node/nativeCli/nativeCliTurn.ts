@@ -7,7 +7,7 @@ import type { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import type { AgentSignal, IAgentActionSignal } from '../../common/agent.js';
 import { ActionType } from '../../common/state/sessionActions.js';
-import { MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, ToolResultContentType, TurnState, createErrorResponsePart, type MarkdownResponsePart, type ReasoningResponsePart, type ModelSelection, type ToolCallResponsePart, type ToolCallResult, type Turn } from '../../common/state/sessionState.js';
+import { MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, ToolResultContentType, TurnState, createErrorResponsePart, type MarkdownResponsePart, type ReasoningResponsePart, type ModelSelection, type ToolCallResponsePart, type ToolCallResult, type ToolResultFileEditContent, type Turn } from '../../common/state/sessionState.js';
 import { record, type NativeRecord } from './nativeCliTransport.js';
 
 /** Extracts readable content from native content blocks, without printing protocol envelopes. */
@@ -38,6 +38,8 @@ export class NativeCliTurn {
 	private readonly tools = new Map<string, ToolCallResponsePart>();
 	/** What each tool call last told clients: its input, and whether it ever asked for a decision. */
 	private readonly announced = new Map<string, { readonly input: string | undefined; readonly confirmation: boolean }>();
+	/** The file edits that the next result of a call carries, as recorded while it ran. */
+	private readonly fileEdits = new Map<string, ToolResultFileEditContent>();
 	private readonly events = new Set<string>();
 	private readonly streamedParts = new Map<string, string>();
 	private ended = false;
@@ -91,12 +93,21 @@ export class NativeCliTurn {
 		this.action({ type: ActionType.ChatToolCallReady, turnId: this.turn.id, toolCallId, invocationMessage: name, toolInput, ...(confirmation ? (confirmationTitle ? { confirmationTitle } : {}) : { confirmed: ToolCallConfirmationReason.NotNeeded }) });
 	}
 
+	/** Records the file a call edited, which its result then carries so that the edit counts as a change of the session. */
+	attachFileEdit(id: string, edit: ToolResultFileEditContent): void {
+		this.fileEdits.set(id, edit);
+	}
+
 	toolResult(id: string, output: unknown, success: boolean): void {
 		if (this.ended) { return; }
 		if (!this.tools.has(id)) { this.tool(id, id); }
 		const part = this.tools.get(id)!;
+		// A runtime can report the end of a call more than once. The first report is the result.
+		if (part.toolCall.status === ToolCallStatus.Completed) { return; }
 		const text = nativeText(output) || (output === undefined ? '' : JSON.stringify(output));
-		const result: ToolCallResult = { success, pastTenseMessage: part.toolCall.displayName, content: [{ type: ToolResultContentType.Text, text }] };
+		const edit = this.fileEdits.get(id);
+		this.fileEdits.delete(id);
+		const result: ToolCallResult = { success, pastTenseMessage: part.toolCall.displayName, content: [{ type: ToolResultContentType.Text, text }, ...(edit ? [edit] : [])] };
 		part.toolCall = { toolCallId: this.toolId(id), toolName: part.toolCall.toolName, displayName: part.toolCall.displayName, status: ToolCallStatus.Completed, invocationMessage: part.toolCall.displayName, confirmed: ToolCallConfirmationReason.NotNeeded, ...result };
 		this.action({ type: ActionType.ChatToolCallComplete, turnId: this.turn.id, toolCallId: this.toolId(id), result });
 	}

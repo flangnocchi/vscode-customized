@@ -18,11 +18,13 @@ import { INativeEnvironmentService } from '../../../environment/common/environme
 import { type IAgentActionSignal, type IAgentChatContext, fixedChatOwnerRef } from '../../common/agent.js';
 import { nativeCliAgentEnv, type INativeCliAgentConfig, type NativeCliAgentId } from '../../common/nativeCliAgentConfig.js';
 import { ActionType, type IToolCallReadyAction } from '../../common/state/sessionActions.js';
-import { MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, TurnState, type Turn } from '../../common/state/sessionState.js';
+import { MessageKind, ResponsePartKind, ToolCallConfirmationReason, ToolCallStatus, ToolResultContentType, TurnState, type Turn } from '../../common/state/sessionState.js';
 import { NativeCliAgent, nativeCliLaunch, readNativeCliAgentConfigs } from '../../node/nativeCli/nativeCliAgent.js';
 import { NativeCliTransport } from '../../node/nativeCli/nativeCliTransport.js';
 import { NativeCliTurn } from '../../node/nativeCli/nativeCliTurn.js';
+import { nativeCliEditedFile } from '../../node/nativeCli/nativeCliFileEdits.js';
 import { TestSessionDatabase, createSessionDataService } from '../common/sessionTestHelpers.js';
+import { createNativeCliInstantiationService } from './nativeCliTestServices.js';
 
 // A real subprocess implementing both dialects; no account, inference or disk database.
 const fixture = String.raw`
@@ -54,6 +56,16 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   send({id:m.id,result:dialect==='dsh'?{messageId:'message'}:{accepted:true}});
 	  if(prompt==='crash'){process.exit(2);break;}
 	  if(prompt==='hold'){if(dialect==='dsh')dsh('assistant/message',{message:{content:[{type:'text',text:'waiting'}]}});else event('part.delta',{partId:'answer',field:'text',delta:'waiting'});break;}
+		if(prompt.startsWith('edit:')){
+			const file=prompt.slice(5),call='call-edit',fs=require('fs'),name=dialect==='dsh'?'write':'Write',input={file_path:file,content:'after'};
+			if(dialect==='dsh')dsh('assistant/message',{message:{content:[{type:'tool-call',id:call,name,arguments:JSON.stringify(input)}]}});
+			else event('model.streaming',{kind:'tool_call',toolCallId:call,toolName:name,input});
+			setTimeout(()=>{
+				fs.writeFileSync(file,'after');
+				if(dialect==='dsh')dsh('tool/result',{message:{source:{callId:call},content:[{type:'text',text:'ok'}]}});
+				else event('tool.updated',{kind:'result',toolCallId:call,result:{success:true,content:'ok'}});
+				finish('edited',dialect);
+			},50);break;}
 	  if(prompt==='permission'){send({id:'permission',method:'approval/request',params:{sessionId:session,callId:'call-1',toolName:'write',reason:'Write /workspace/a.txt'}});break;}
   if(dialect==='dsh'&&prompt.startsWith('/output-style')){dsh('command/done',{commandId:'style',kind:prompt.endsWith('missing')?'error':'success',text:prompt.endsWith('missing')?'Unknown output style: missing':'Session style: concise'});dsh('turn/end',{reason:{kind:'completed'}});done=true;if(waiter)send({id:waiter,result:{}});break;}
   finish('pid='+process.pid+';resumed='+restored,dialect);break;
@@ -83,7 +95,7 @@ suite('Native CLI agents', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	function agent(id: NativeCliAgentId): NativeCliAgent {
-		return store.add(new NativeCliAgent(id, config, data, new NullLogService(), { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined })));
+		return store.add(new NativeCliAgent(id, config, data, new NullLogService(), { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined }), createNativeCliInstantiationService(store, data)));
 	}
 
 	async function create(provider: NativeCliAgent, suffix: string): Promise<URI> {
@@ -99,7 +111,7 @@ suite('Native CLI agents', () => {
 	for (const dialect of ['dsh', 'zcode'] as const) {
 		test(`${dialect}: a workspaceless chat sends and resumes in its stable scratch folder`, async () => {
 			const home = await fs.mkdtemp(join(tmpdir(), 'native-cli-workspaceless-'));
-			const provider = store.add(new NativeCliAgent(dialect, config, data, new NullLogService(), { userHome: URI.file(home) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined })));
+			const provider = store.add(new NativeCliAgent(dialect, config, data, new NullLogService(), { userHome: URI.file(home) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined }), createNativeCliInstantiationService(store, data)));
 			const chat = URI.parse(`ahp-chat:/${dialect}-workspaceless`);
 			const ctx = { ...context(chat), launchWorkingDirectories: undefined, workspaceless: true };
 			let project: unknown;
@@ -143,12 +155,55 @@ suite('Native CLI agents', () => {
 
 	test('zcode: an explicit model list keeps its own choices once the runtime reports its catalog', async () => {
 		const models = [{ id: 'mine/other', name: 'Mine' }, { id: 'fixture/one', name: 'Renamed' }];
-		const provider = store.add(new NativeCliAgent('zcode', { ...config, models }, data, new NullLogService(), { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined })));
+		const provider = store.add(new NativeCliAgent('zcode', { ...config, models }, data, new NullLogService(), { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined }), createNativeCliInstantiationService(store, data)));
 		const chat = await create(provider, 'zcode-models');
 		await send(provider, chat, 'first', 'first');
 		// The runtime adds the thinking levels it knows for a listed model, and nothing is dropped or invented.
 		assert.deepStrictEqual(provider.models.get().map(model => [model.id, model.name, !!model.configSchema]), [['mine/other', 'Mine', false], ['fixture/one', 'Renamed', true]]);
 		await provider.shutdown();
+	});
+
+	for (const dialect of ['dsh', 'zcode'] as const) {
+		test(`${dialect}: a file written by a native edit tool is recorded as a change of the session`, async () => {
+			const directory = await fs.mkdtemp(join(tmpdir(), 'native-cli-edit-'));
+			const file = join(directory, 'note.txt');
+			await fs.writeFile(file, 'a\nb\nc');
+			const provider = agent(dialect);
+			try {
+				const chat = await create(provider, `${dialect}-edit`);
+				await send(provider, chat, `edit:${file}`, `${dialect}-edit-turn`);
+				const [turn] = await provider.chats.getMessages(chat, context(chat));
+				const edits = turn.responseParts.flatMap(part => part.kind === ResponsePartKind.ToolCall && part.toolCall.status === ToolCallStatus.Completed ? part.toolCall.content ?? [] : [])
+					.filter(content => content.type === ToolResultContentType.FileEdit);
+				const stored = await database.readFileEditContent('call-edit', file);
+				assert.deepStrictEqual({
+					state: turn.state,
+					edits: edits.map(edit => [edit.after?.uri, edit.diff]),
+					stored: stored && [stored.beforeContent && new TextDecoder().decode(stored.beforeContent), stored.afterContent && new TextDecoder().decode(stored.afterContent)],
+				}, {
+					state: TurnState.Complete,
+					edits: [[URI.file(file).toString(), { added: 0, removed: 2 }]],
+					stored: ['a\nb\nc', 'after'],
+				});
+			} finally {
+				await provider.shutdown();
+				await fs.rm(directory, { recursive: true, force: true });
+			}
+		});
+	}
+
+	test('only the native tools that write a file are recorded, at the path they were given', () => {
+		const input = { file_path: 'sub/a.txt' };
+		assert.deepStrictEqual([
+			nativeCliEditedFile('dsh', 'write', JSON.stringify(input), '/work'),
+			nativeCliEditedFile('dsh', 'edit', { file_path: '/other/b.txt' }, '/work'),
+			nativeCliEditedFile('zcode', 'Edit', input, '/work'),
+			nativeCliEditedFile('zcode', 'Write', { path: '/work/c.txt' }, '/work'),
+			nativeCliEditedFile('dsh', 'bash', { command: 'echo > a.txt' }, '/work'),
+			nativeCliEditedFile('dsh', 'Write', input, '/work'),
+			nativeCliEditedFile('dsh', 'write', 'not json', '/work'),
+			nativeCliEditedFile('dsh', 'write', {}, '/work'),
+		], ['/work/sub/a.txt', '/other/b.txt', '/work/sub/a.txt', '/work/c.txt', undefined, undefined, undefined, undefined]);
 	});
 
 	test('stopping one chat leaves another process usable and the cancelled chat resumes', async () => {
@@ -346,7 +401,8 @@ suite('Native CLI agents', () => {
 		const failing = new FailingDatabase();
 		const errors: unknown[] = [];
 		const log = new class extends NullLogService { override error(message: string | Error): void { errors.push(message); } }();
-		const provider = store.add(new NativeCliAgent('dsh', config, createSessionDataService(failing), log, { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined })));
+		const failingData = createSessionDataService(failing);
+		const provider = store.add(new NativeCliAgent('dsh', config, failingData, log, { userHome: URI.file(tmpdir()) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => undefined }), createNativeCliInstantiationService(store, failingData)));
 		try {
 			const chat = await create(provider, 'failing-write');
 			const published: string[] = [];

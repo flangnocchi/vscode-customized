@@ -25,6 +25,7 @@ import { ActionType } from '../../common/state/sessionActions.js';
 import { ChatInputAnswerState, ChatInputAnswerValueKind, ChatInputQuestionKind, ChatInputResponseKind, TurnState, type ChatInputAnswer, type ChatInputQuestion, type Customization, type ModelSelection, type Turn } from '../../common/state/sessionState.js';
 import { NativeCliTransport, record, type INativeCliLaunch, type NativeRecord } from './nativeCliTransport.js';
 import { NativeCliTurn } from './nativeCliTurn.js';
+import { NativeCliFileEdits, nativeCliToolEnd, nativeCliToolStarts } from './nativeCliFileEdits.js';
 import { ensureWorkspacelessScratchDir } from '../workspacelessScratchDir.js';
 import { discoverNativeCliModels, zcodeModelCatalog, zcodeRuntimePreferences } from './nativeCliModelCatalog.js';
 import { discoverNativeCliRuntimeSnapshot, nativeCliCustomizations } from './nativeCliCustomizations.js';
@@ -80,6 +81,12 @@ interface IChat {
 	lastSaved: number;
 	disposed: boolean;
 	generation: number;
+	/** The session that owns the chat, which can change while the chat runs. */
+	owner: IAgentChatContext['owner'];
+	/** Records the files that the native edit tools write. Created with the first tool call that needs it. */
+	edits: NativeCliFileEdits | undefined;
+	/** Native notifications are handled in the order they arrived, even when one waits for a file edit to be recorded. */
+	events: Promise<void>;
 }
 
 /** Whether the chat finished a turn, so that its native session holds something worth keeping. */
@@ -216,6 +223,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		@ILogService private readonly logService: ILogService,
 		@INativeEnvironmentService private readonly environmentService: INativeEnvironmentService,
 		@IAgentConfigurationService private readonly agentConfigurationService: IAgentConfigurationService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
 	) {
 		super();
 		this._register(toDisposable(() => this.catalogAbort.abort()));
@@ -326,7 +334,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		createChat: (chat, context, options) => this.create(chat, resolveAgentChatContext(context, chat), options),
 		disposeChat: async chat => {
 			const entry = this.entries.get(chat.toString());
-			if (entry) { entry.disposed = true; await this.stop(entry); await entry.write; this.entries.delete(chat.toString()); }
+			if (entry) { entry.disposed = true; await this.stop(entry); await entry.write; entry.edits?.dispose(); this.entries.delete(chat.toString()); }
 		},
 		releaseChat: async chat => {
 			const entry = this.entries.get(chat.toString());
@@ -373,14 +381,14 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		const model = options?.model ?? this.defaultModel;
 		if (!model) { throw new Error(localize('nativeCli.modelsUnavailable', "Could not read the {0} model catalog. Check its native provider configuration and try again.", this.id)); }
 		const permissionMode = resolveNativeCliPermissionConfig(this.id, this.permissionCatalog, options?.config).values[nativeCliPermissionModeKey(this.id)];
-		const entry = this.newEntry(chat, context.resource, { version: 1, provider: this.id, nativeId: this.id === 'zcode' ? `sess_${generateUuid()}` : generateUuid(), cwd, model, workspaceless, persisted: false, createdAt: Date.now(), modifiedAt: Date.now() });
+		const entry = this.newEntry(chat, context.resource, context.owner, { version: 1, provider: this.id, nativeId: this.id === 'zcode' ? `sess_${generateUuid()}` : generateUuid(), cwd, model, workspaceless, persisted: false, createdAt: Date.now(), modifiedAt: Date.now() });
 		if (typeof permissionMode === 'string') { entry.backing.permissionMode = permissionMode; }
 		return { providerData: JSON.stringify(entry.backing), provisional: true };
 	}
 
-	private newEntry(uri: URI, resource: URI, backing: IBacking, history: Turn[] = []): IChat {
+	private newEntry(uri: URI, resource: URI, owner: IAgentChatContext['owner'], backing: IBacking, history: Turn[] = []): IChat {
 		if (this.closing) { throw new Error(localize('nativeCli.shuttingDown', "Native agent is shutting down.")); }
-		const entry: IChat = { uri, resource, backing, history, clients: new Map(), pending: new Set(), process: undefined, processStore: undefined, starting: undefined, stopping: undefined, active: undefined, completion: undefined, write: Promise.resolve(), lastSaved: 0, disposed: false, generation: 0 };
+		const entry: IChat = { uri, resource, backing, history, clients: new Map(), pending: new Set(), process: undefined, processStore: undefined, starting: undefined, stopping: undefined, active: undefined, completion: undefined, write: Promise.resolve(), lastSaved: 0, disposed: false, generation: 0, owner, edits: undefined, events: Promise.resolve() };
 		this.entries.set(uri.toString(), entry);
 		return entry;
 	}
@@ -392,7 +400,8 @@ export class NativeCliAgent extends Disposable implements IAgent {
 		if (raw.version !== 1 || raw.provider !== this.id || typeof raw.nativeId !== 'string' || typeof raw.cwd !== 'string' || !isAbsolute(raw.cwd) || typeof model.id !== 'string' || typeof raw.createdAt !== 'number' || typeof raw.modifiedAt !== 'number' || typeof raw.persisted !== 'boolean') { throw new Error(localize('nativeCli.invalidBacking', "Invalid saved native agent conversation.")); }
 		const backing = raw as unknown as IBacking;
 		if (!this.entries.has(chat.toString())) {
-			const resource = resolveAgentChatContext(context, chat).resource;
+			const resolved = resolveAgentChatContext(context, chat);
+			const resource = resolved.resource;
 			const ref = this.dataService.openDatabase(resource);
 			let history: Turn[];
 			try {
@@ -402,7 +411,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 				// JSON drops an undefined `usage`, while a live turn keeps the key. A restored turn must equal the live one.
 				history = (saved as Turn[]).map(turn => ({ ...turn, usage: turn.usage }));
 			} finally { ref.dispose(); }
-			this.newEntry(chat, resource, backing, history);
+			this.newEntry(chat, resource, resolved.owner, backing, history);
 		}
 		return { providerData };
 	}
@@ -549,6 +558,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			this.require(chat);
 		}
 		const generation = entry.generation;
+		entry.owner = context.owner;
 		if (entry.active) { throw new Error(localize('nativeCli.alreadyRunning', "A native agent turn is already running.")); }
 		if (roots && (roots.length > 1 || roots.some(directory => directory.scheme !== 'file'))) { throw new Error(localize('nativeCli.singleRoot', "Native CLI agents support one local workspace folder per chat.")); }
 		if (roots?.[0] && roots[0].fsPath !== entry.backing.cwd) {
@@ -582,6 +592,8 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			if (this.id === 'dsh') {
 				await connection.request('session/prompt', { sessionId: entry.backing.nativeId, contentBlocks: [{ type: 'text', text: prompt }] });
 				await connection.request('session/wait', { sessionId: entry.backing.nativeId }, 0);
+				// Events that arrived before the answer are still being handled, and the last of them may end the turn with an error.
+				await entry.events;
 				void completion.complete();
 			} else {
 				await connection.request('session/send', { sessionId: entry.backing.nativeId, inputId: turnId, content: prompt, ...(this.zcodeModel(entry.backing.model) ? { modelSelection: this.zcodeModel(entry.backing.model) } : {}) });
@@ -593,6 +605,8 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			turn.finish(cancelled ? TurnState.Cancelled : TurnState.Error, cancelled ? undefined : error instanceof Error ? error.message : String(error));
 			if (!cancelled) { throw error; }
 		} finally {
+			// A native edit that never finished, as when the turn was stopped, changed nothing that is recorded.
+			await entry.edits?.discardPending(turn.turn.id, entry.backing.model.id);
 			entry.backing.modifiedAt = Date.now();
 			if (entry.active === turn) { entry.active = undefined; entry.completion = undefined; }
 			await this.save(entry, true);
@@ -606,16 +620,36 @@ export class NativeCliAgent extends Disposable implements IAgent {
 			this.customizationsChanged.fire();
 			return;
 		}
-		if (entry.process !== connection || entry.stopping || !entry.active) { return; }
-		if (this.id === 'dsh' && method === 'session.event' && params.sessionId === entry.backing.nativeId) {
+		const turn = entry.active;
+		if (entry.process !== connection || entry.stopping || !turn || params.sessionId !== entry.backing.nativeId) { return; }
+		// A file is read before its native tool writes it, so this cannot wait for the events ahead of it.
+		for (const call of nativeCliToolStarts(this.id, method, params)) {
+			this.fileEdits(entry).begin(this.id, call, entry.backing.cwd, entry.backing.permissionMode);
+		}
+		entry.events = entry.events.then(() => this.handleNotification(entry, connection, turn, method, params)).catch(error => this.logService.error('Native agent event handling failed', error));
+	}
+
+	private fileEdits(entry: IChat): NativeCliFileEdits {
+		return entry.edits ??= this.instantiationService.createInstance(NativeCliFileEdits, this.id, entry.uri.toString(), entry.resource.toString(), () => entry.owner.get().toString());
+	}
+
+	private async handleNotification(entry: IChat, connection: NativeCliTransport, turn: NativeCliTurn, method: string, params: NativeRecord): Promise<void> {
+		const end = nativeCliToolEnd(this.id, method, params);
+		if (end && entry.edits) {
+			// The result of an edit carries the edit, so it waits until the file has been read again and the edit stored.
+			const edit = await entry.edits.complete(end.callId, turn.turn.id, end.success, entry.backing.model.id);
+			if (edit) { turn.attachFileEdit(end.callId, edit); }
+		}
+		if (entry.process !== connection || entry.stopping || entry.active !== turn) { return; }
+		if (this.id === 'dsh' && method === 'session.event') {
 			const event = record(params.event);
-			entry.active.dsh(event);
+			turn.dsh(event);
 			if (event.type === 'turn/end') {
 				const reason = record(record(event.data).reason);
 				if (reason.kind === 'error' || reason.kind === 'failed') { void entry.completion?.error(new Error(String(reason.message ?? localize('nativeCli.dshFailed', "DeepSeek Harness turn failed.")))); }
 			}
-		} else if (this.id === 'zcode' && method === 'session/event' && params.sessionId === entry.backing.nativeId) {
-			const result = entry.active.zcode(params);
+		} else if (this.id === 'zcode' && method === 'session/event') {
+			const result = turn.zcode(params);
 			if (result.finished) {
 				if (result.cancelled) { void entry.completion?.error(new CancellationError()); }
 				else if (result.error) { void entry.completion?.error(new Error(result.error)); }
@@ -766,7 +800,7 @@ export class NativeCliAgent extends Disposable implements IAgent {
 	shutdown(): Promise<void> {
 		this.closing = true;
 		this.catalogAbort.abort();
-		return this.shutdownTask ??= Promise.all([this.catalogLoad, this.permissionsLoad, ...[...this.customizationRequests.values()].map(request => request.catch(() => { })), ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; })]).then(() => { });
+		return this.shutdownTask ??= Promise.all([this.catalogLoad, this.permissionsLoad, ...[...this.customizationRequests.values()].map(request => request.catch(() => { })), ...[...this.entries.values()].map(async entry => { await this.stop(entry); await entry.write; entry.edits?.dispose(); })]).then(() => { });
 	}
 	override dispose(): void { void this.shutdown(); super.dispose(); }
 }

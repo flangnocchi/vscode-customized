@@ -19,6 +19,7 @@ import { type INativeCliAgentConfig } from '../../common/nativeCliAgentConfig.js
 import { readRuntimeToolInventory } from '../../common/meta/runtimeToolInventory.js';
 import { TurnState } from '../../common/state/sessionState.js';
 import { IAgentConfigurationService } from '../../node/agentConfigurationService.js';
+import { createNativeCliInstantiationService } from './nativeCliTestServices.js';
 import { NativeCliAgent } from '../../node/nativeCli/nativeCliAgent.js';
 import { TestSessionDatabase, createSessionDataService } from '../common/sessionTestHelpers.js';
 
@@ -109,7 +110,7 @@ suite('Native CLI agent discovery', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	function agent(type: typeof NativeCliAgent = NativeCliAgent, agentConfig: INativeCliAgentConfig = config): NativeCliAgent {
-		const provider = store.add(new type('dsh', agentConfig, data, log, { userHome: URI.file(root) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => chosenMode ? { 'dsh.permissionMode': chosenMode } : undefined })));
+		const provider = store.add(new type('dsh', agentConfig, data, log, { userHome: URI.file(root) } as INativeEnvironmentService, upcastPartial<IAgentConfigurationService>({ getChatConfigValues: () => chosenMode ? { 'dsh.permissionMode': chosenMode } : undefined }), createNativeCliInstantiationService(store, data)));
 		providers.push(provider);
 		return provider;
 	}
